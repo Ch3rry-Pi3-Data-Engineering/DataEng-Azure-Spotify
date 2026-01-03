@@ -1,0 +1,4 @@
+resource_group_name = "rg-spotify-<random>"
+location            = "eastus2"
+storage_account_name_prefix = "stspotify"
+account_replication_type = "LRS"

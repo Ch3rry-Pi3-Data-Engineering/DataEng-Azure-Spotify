@@ -1,0 +1,16 @@
+resource_group_name = "rg-spotify-<random>"
+location            = "eastus2"
+sql_server_name_prefix = "sql-spotify"
+
+sql_admin_login    = "sqladmin"
+sql_admin_password = "<set-me>"
+azuread_admin_login = "your.name@domain.com"
+client_ip_address = "<your-public-ip>"
+
+database_name     = "spotify-dev"
+database_sku_name = "GP_S_Gen5_1"
+max_size_gb       = 1
+min_capacity      = 0.5
+auto_pause_delay_in_minutes = 60
+public_network_access_enabled = true
+zone_redundant    = false
