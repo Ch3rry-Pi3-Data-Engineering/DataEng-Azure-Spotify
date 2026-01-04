@@ -1,0 +1,12 @@
+data_factory_id         = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.DataFactory/factories/<factory>"
+sql_linked_service_name = "lsqldb-spotify-dev"
+sql_server_fqdn         = "sql-spotifytoughpug.database.windows.net"
+sql_database_name       = "spotify-dev"
+sql_username            = "sqladmin"
+sql_password            = "<set-me>"
+
+adls_linked_service_name = "lsadls-spotify"
+storage_dfs_endpoint      = "https://stspotifyexample.dfs.core.windows.net"
+storage_account_key       = "<set-me>"
+
+description = "Linked services for Azure SQL Database and ADLS Gen2"

@@ -24,6 +24,18 @@ DEFAULTS = {
     "sql_auto_pause_delay_in_minutes": 60,
     "sql_public_network_access_enabled": True,
     "sql_zone_redundant": False,
+    "adf_sql_linked_service_name": "lsqldb-spotify-dev",
+    "adf_adls_linked_service_name": "lsadls-spotify",
+    "adf_pipeline_name": "incremental_ingestion",
+    "adf_cdc_dataset_name": "ds_spotify_cdc_json",
+    "adf_sql_dataset_name": "ds_spotify_sql_source",
+    "adf_sink_dataset_name": "ds_spotify_bronze_parquet",
+    "adf_lookup_container": "bronze",
+    "adf_lookup_folder": "cdc",
+    "adf_lookup_file": "cdc.json",
+    "adf_sink_container": "bronze",
+    "adf_sink_folder": "Users",
+    "adf_sink_file": "@{concat(pipeline().parameters.table,'_',variables('current'))}.parquet",
 }
 
 SQLCMD_FALLBACK_PATHS = [
@@ -41,6 +53,10 @@ def run_capture(cmd):
     print(f"\n$ {' '.join(cmd)}")
     return subprocess.check_output(cmd, text=True).strip()
 
+def run_optional(cmd):
+    print(f"\n$ {' '.join(cmd)}")
+    return subprocess.run(cmd)
+
 def run_sensitive(cmd, redacted_indices):
     display_cmd = cmd[:]
     for index in redacted_indices:
@@ -48,6 +64,18 @@ def run_sensitive(cmd, redacted_indices):
             display_cmd[index] = "***"
     print(f"\n$ {' '.join(display_cmd)}")
     subprocess.check_call(cmd)
+
+def require_adf_git_linked(skip_check):
+    if skip_check:
+        return
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "ADF Git check requires an interactive terminal. Re-run with --skip-adf-git-check to bypass."
+        )
+    response = input("Have you linked Azure Data Factory to GitHub? Type 'yes' to continue: ").strip().lower()
+    if response not in ("y", "yes"):
+        print("Link GitHub in ADF Studio (Manage -> Git configuration), then re-run the deploy.")
+        sys.exit(1)
 
 def get_azuread_admin_login():
     env_value = os.environ.get("AZUREAD_ADMIN_LOGIN")
@@ -94,6 +122,10 @@ def read_tfvars_value(path, key):
         return value
     return None
 
+def get_tfvar_or_default(path, key, default):
+    value = read_tfvars_value(path, key)
+    return default if value is None else value
+
 def generate_password(length=20):
     symbols = "!@#$%^&*_-+=?"
     alphabet = string.ascii_letters + string.digits + symbols
@@ -115,14 +147,25 @@ def detect_public_ip():
     except (urllib.error.URLError, TimeoutError):
         return None
 
-def get_sql_admin_password(sql_dir):
+def get_sql_admin_password(sql_dir, allow_generate=True):
     env_password = os.environ.get("SQL_ADMIN_PASSWORD")
     if env_password:
         return env_password, False
     existing = read_tfvars_value(sql_dir / "terraform.tfvars", "sql_admin_password")
     if existing:
         return existing, False
-    return generate_password(), True
+    if allow_generate:
+        return generate_password(), True
+    raise RuntimeError("SQL admin password not found. Set SQL_ADMIN_PASSWORD or deploy SQL first.")
+
+def get_sql_admin_login(sql_dir):
+    env_login = os.environ.get("SQL_ADMIN_LOGIN")
+    if env_login:
+        return env_login
+    existing = read_tfvars_value(sql_dir / "terraform.tfvars", "sql_admin_login")
+    if existing:
+        return existing
+    return DEFAULTS["sql_admin_login"]
 
 def get_sql_client_ip(sql_dir):
     env_ip = os.environ.get("SQL_CLIENT_IP")
@@ -162,6 +205,19 @@ def write_tfvars(path, items):
 def get_output(tf_dir, output_name):
     return run_capture(["terraform", f"-chdir={tf_dir}", "output", "-raw", output_name])
 
+def get_output_optional(tf_dir, output_name):
+    try:
+        return get_output(tf_dir, output_name)
+    except subprocess.CalledProcessError:
+        return None
+
+def get_state_addresses(tf_dir):
+    try:
+        output = run_capture(["terraform", f"-chdir={tf_dir}", "state", "list"])
+    except subprocess.CalledProcessError:
+        return set()
+    return {line.strip() for line in output.splitlines() if line.strip()}
+
 def write_rg_tfvars(rg_dir):
     items = [
         ("resource_group_name", None),
@@ -189,7 +245,7 @@ def write_data_factory_tfvars(data_factory_dir, rg_name):
 
 def write_sql_tfvars(sql_dir, rg_name):
     admin_login = os.environ.get("SQL_ADMIN_LOGIN", DEFAULTS["sql_admin_login"])
-    admin_password, generated_password = get_sql_admin_password(sql_dir)
+    admin_password, generated_password = get_sql_admin_password(sql_dir, allow_generate=True)
     azuread_admin_login = get_azuread_admin_login()
     azuread_admin_object_id = get_env_optional("AZUREAD_ADMIN_OBJECT_ID")
     client_ip_address, detected_ip = get_sql_client_ip(sql_dir)
@@ -217,12 +273,89 @@ def write_sql_tfvars(sql_dir, rg_name):
         print(f"Detected public IP {client_ip_address} and stored it in terraform/03_sql_database/terraform.tfvars")
     return admin_login, admin_password
 
+def write_adf_linked_services_tfvars(
+    linked_services_dir,
+    data_factory_id,
+    sql_server_fqdn,
+    sql_database_name,
+    sql_username,
+    sql_password,
+    storage_dfs_endpoint,
+    storage_account_key,
+):
+    items = [
+        ("data_factory_id", data_factory_id),
+        ("sql_linked_service_name", DEFAULTS["adf_sql_linked_service_name"]),
+        ("sql_server_fqdn", sql_server_fqdn),
+        ("sql_database_name", sql_database_name),
+        ("sql_username", sql_username),
+        ("sql_password", sql_password),
+        ("adls_linked_service_name", DEFAULTS["adf_adls_linked_service_name"]),
+        ("storage_dfs_endpoint", storage_dfs_endpoint),
+        ("storage_account_key", storage_account_key),
+    ]
+    write_tfvars(linked_services_dir / "terraform.tfvars", items)
+
+def write_adf_pipeline_tfvars(
+    pipeline_dir,
+    data_factory_id,
+    sql_linked_service_name,
+    adls_linked_service_name,
+):
+    items = [
+        ("data_factory_id", data_factory_id),
+        ("sql_linked_service_name", sql_linked_service_name),
+        ("adls_linked_service_name", adls_linked_service_name),
+        ("pipeline_name", DEFAULTS["adf_pipeline_name"]),
+        ("cdc_dataset_name", DEFAULTS["adf_cdc_dataset_name"]),
+        ("sql_dataset_name", DEFAULTS["adf_sql_dataset_name"]),
+        ("sink_dataset_name", DEFAULTS["adf_sink_dataset_name"]),
+        ("lookup_container", DEFAULTS["adf_lookup_container"]),
+        ("lookup_folder", DEFAULTS["adf_lookup_folder"]),
+        ("lookup_file", DEFAULTS["adf_lookup_file"]),
+        ("sink_container", DEFAULTS["adf_sink_container"]),
+        ("sink_folder", DEFAULTS["adf_sink_folder"]),
+        ("sink_file", DEFAULTS["adf_sink_file"]),
+    ]
+    write_tfvars(pipeline_dir / "terraform.tfvars", items)
+
+def maybe_reset_pipeline_for_dataset_rename(pipeline_dir):
+    desired_cdc = get_tfvar_or_default(
+        pipeline_dir / "terraform.tfvars",
+        "cdc_dataset_name",
+        DEFAULTS["adf_cdc_dataset_name"],
+    )
+    desired_sql = get_tfvar_or_default(
+        pipeline_dir / "terraform.tfvars",
+        "sql_dataset_name",
+        DEFAULTS["adf_sql_dataset_name"],
+    )
+    desired_sink = get_tfvar_or_default(
+        pipeline_dir / "terraform.tfvars",
+        "sink_dataset_name",
+        DEFAULTS["adf_sink_dataset_name"],
+    )
+    current_cdc = get_output_optional(pipeline_dir, "cdc_dataset_name")
+    current_sql = get_output_optional(pipeline_dir, "sql_dataset_name")
+    current_sink = get_output_optional(pipeline_dir, "sink_dataset_name")
+    if not any([current_cdc, current_sql, current_sink]):
+        return
+    if (current_cdc, current_sql, current_sink) == (desired_cdc, desired_sql, desired_sink):
+        return
+    state = get_state_addresses(pipeline_dir)
+    if "azurerm_data_factory_pipeline.incremental" not in state:
+        return
+    print("Dataset names changed; removing pipeline to unblock dataset replacement.")
+    run(["terraform", f"-chdir={pipeline_dir}", "destroy", "-auto-approve", "-target=azurerm_data_factory_pipeline.incremental"])
+
 def run_sql_script(sql_dir, admin_login, admin_password, script_path):
     if not script_path.exists():
         raise FileNotFoundError(f"Missing SQL script: {script_path}")
     sqlcmd_path = find_sqlcmd()
     if sqlcmd_path is None:
-        raise FileNotFoundError("sqlcmd not found. Install Microsoft sqlcmd or run the script manually.")
+        raise FileNotFoundError(
+            "sqlcmd not found. Install Microsoft sqlcmd or re-run with --skip-sql-init."
+        )
     server_fqdn = get_output(sql_dir, "sql_server_fqdn")
     database_name = get_output(sql_dir, "sql_database_name")
     cmd = [
@@ -242,6 +375,24 @@ def run_sql_script(sql_dir, admin_login, admin_password, script_path):
     password_index = cmd.index("-P") + 1
     run_sensitive(cmd, redacted_indices=[password_index])
 
+def ensure_storage_seed_blobs(storage_dir):
+    account_name = get_output_optional(storage_dir, "storage_account_name")
+    if not account_name:
+        return
+    state = get_state_addresses(storage_dir)
+    imports = {
+        "azurerm_storage_blob.cdc_json": f"https://{account_name}.blob.core.windows.net/bronze/cdc/cdc.json",
+        "azurerm_storage_blob.cdc_empty_json": f"https://{account_name}.blob.core.windows.net/bronze/cdc/empty.json",
+    }
+    for address, resource_id in imports.items():
+        if address in state:
+            continue
+        result = run_optional(
+            ["terraform", f"-chdir={storage_dir}", "import", address, resource_id]
+        )
+        if result.returncode != 0:
+            print(f"Skipping import for {address}. It may not exist yet.")
+
 if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser(description="Deploy Terraform stacks for the Spotify data platform.")
@@ -250,7 +401,11 @@ if __name__ == "__main__":
         group.add_argument("--storage-only", action="store_true", help="Deploy only the storage account stack")
         group.add_argument("--sql-only", action="store_true", help="Deploy only the SQL server + database stack")
         group.add_argument("--datafactory-only", action="store_true", help="Deploy only the data factory stack")
+        group.add_argument("--adf-links-only", action="store_true", help="Deploy only the ADF linked services stack")
+        group.add_argument("--adf-pipeline-only", action="store_true", help="Deploy only the ADF pipeline stack")
         parser.add_argument("--sql-init", action="store_true", help="Run the SQL init script after SQL deploy")
+        parser.add_argument("--skip-sql-init", action="store_true", help="Skip SQL init on full deploy")
+        parser.add_argument("--skip-adf-git-check", action="store_true", help="Skip manual ADF Git prompt")
         args = parser.parse_args()
 
         repo_root = Path(__file__).resolve().parent.parent
@@ -258,6 +413,17 @@ if __name__ == "__main__":
         storage_dir = repo_root / "terraform" / "02_storage_account"
         sql_dir = repo_root / "terraform" / "03_sql_database"
         data_factory_dir = repo_root / "terraform" / "04_data_factory"
+        linked_services_dir = repo_root / "terraform" / "05_adf_linked_services"
+        pipeline_dir = repo_root / "terraform" / "06_adf_pipeline_incremental"
+        full_deploy = not (
+            args.rg_only
+            or args.storage_only
+            or args.sql_only
+            or args.datafactory_only
+            or args.adf_links_only
+            or args.adf_pipeline_only
+        )
+        run_sql_init = args.sql_init or (full_deploy and not args.skip_sql_init)
 
         if args.rg_only:
             write_rg_tfvars(rg_dir)
@@ -270,6 +436,7 @@ if __name__ == "__main__":
             rg_name = get_output(rg_dir, "resource_group_name")
             write_storage_tfvars(storage_dir, rg_name)
             run(["terraform", f"-chdir={storage_dir}", "init"])
+            ensure_storage_seed_blobs(storage_dir)
             run(["terraform", f"-chdir={storage_dir}", "apply", "-auto-approve"])
             sys.exit(0)
 
@@ -279,7 +446,7 @@ if __name__ == "__main__":
             sql_admin_login, sql_admin_password = write_sql_tfvars(sql_dir, rg_name)
             run(["terraform", f"-chdir={sql_dir}", "init"])
             run(["terraform", f"-chdir={sql_dir}", "apply", "-auto-approve"])
-            if args.sql_init:
+            if run_sql_init:
                 script_path = repo_root / "data_scripts" / "spotify_initial_load.sql"
                 run_sql_script(sql_dir, sql_admin_login, sql_admin_password, script_path)
             sys.exit(0)
@@ -290,6 +457,44 @@ if __name__ == "__main__":
             write_data_factory_tfvars(data_factory_dir, rg_name)
             run(["terraform", f"-chdir={data_factory_dir}", "init"])
             run(["terraform", f"-chdir={data_factory_dir}", "apply", "-auto-approve"])
+            require_adf_git_linked(args.skip_adf_git_check)
+            sys.exit(0)
+
+        if args.adf_links_only:
+            data_factory_id = get_output(data_factory_dir, "data_factory_id")
+            sql_server_fqdn = get_output(sql_dir, "sql_server_fqdn")
+            sql_database_name = get_output(sql_dir, "sql_database_name")
+            sql_username = get_sql_admin_login(sql_dir)
+            sql_password, _ = get_sql_admin_password(sql_dir, allow_generate=False)
+            storage_dfs_endpoint = get_output(storage_dir, "primary_dfs_endpoint")
+            storage_account_key = get_output(storage_dir, "storage_account_primary_access_key")
+            write_adf_linked_services_tfvars(
+                linked_services_dir,
+                data_factory_id,
+                sql_server_fqdn,
+                sql_database_name,
+                sql_username,
+                sql_password,
+                storage_dfs_endpoint,
+                storage_account_key,
+            )
+            run(["terraform", f"-chdir={linked_services_dir}", "init"])
+            run(["terraform", f"-chdir={linked_services_dir}", "apply", "-auto-approve"])
+            sys.exit(0)
+
+        if args.adf_pipeline_only:
+            data_factory_id = get_output(data_factory_dir, "data_factory_id")
+            sql_linked_service_name = get_output(linked_services_dir, "sql_linked_service_name")
+            adls_linked_service_name = get_output(linked_services_dir, "adls_linked_service_name")
+            write_adf_pipeline_tfvars(
+                pipeline_dir,
+                data_factory_id,
+                sql_linked_service_name,
+                adls_linked_service_name,
+            )
+            run(["terraform", f"-chdir={pipeline_dir}", "init"])
+            maybe_reset_pipeline_for_dataset_rename(pipeline_dir)
+            run(["terraform", f"-chdir={pipeline_dir}", "apply", "-auto-approve"])
             sys.exit(0)
 
         write_rg_tfvars(rg_dir)
@@ -299,18 +504,50 @@ if __name__ == "__main__":
 
         write_storage_tfvars(storage_dir, rg_name)
         run(["terraform", f"-chdir={storage_dir}", "init"])
+        ensure_storage_seed_blobs(storage_dir)
         run(["terraform", f"-chdir={storage_dir}", "apply", "-auto-approve"])
 
         sql_admin_login, sql_admin_password = write_sql_tfvars(sql_dir, rg_name)
         run(["terraform", f"-chdir={sql_dir}", "init"])
         run(["terraform", f"-chdir={sql_dir}", "apply", "-auto-approve"])
-        if args.sql_init:
+        if run_sql_init:
             script_path = repo_root / "data_scripts" / "spotify_initial_load.sql"
             run_sql_script(sql_dir, sql_admin_login, sql_admin_password, script_path)
 
         write_data_factory_tfvars(data_factory_dir, rg_name)
         run(["terraform", f"-chdir={data_factory_dir}", "init"])
         run(["terraform", f"-chdir={data_factory_dir}", "apply", "-auto-approve"])
+        require_adf_git_linked(args.skip_adf_git_check)
+
+        data_factory_id = get_output(data_factory_dir, "data_factory_id")
+        sql_server_fqdn = get_output(sql_dir, "sql_server_fqdn")
+        sql_database_name = get_output(sql_dir, "sql_database_name")
+        storage_dfs_endpoint = get_output(storage_dir, "primary_dfs_endpoint")
+        storage_account_key = get_output(storage_dir, "storage_account_primary_access_key")
+        write_adf_linked_services_tfvars(
+            linked_services_dir,
+            data_factory_id,
+            sql_server_fqdn,
+            sql_database_name,
+            sql_admin_login,
+            sql_admin_password,
+            storage_dfs_endpoint,
+            storage_account_key,
+        )
+        run(["terraform", f"-chdir={linked_services_dir}", "init"])
+        run(["terraform", f"-chdir={linked_services_dir}", "apply", "-auto-approve"])
+
+        sql_linked_service_name = get_output(linked_services_dir, "sql_linked_service_name")
+        adls_linked_service_name = get_output(linked_services_dir, "adls_linked_service_name")
+        write_adf_pipeline_tfvars(
+            pipeline_dir,
+            data_factory_id,
+            sql_linked_service_name,
+            adls_linked_service_name,
+        )
+        run(["terraform", f"-chdir={pipeline_dir}", "init"])
+        maybe_reset_pipeline_for_dataset_rename(pipeline_dir)
+        run(["terraform", f"-chdir={pipeline_dir}", "apply", "-auto-approve"])
     except subprocess.CalledProcessError as exc:
         print(f"Command failed: {exc}")
         sys.exit(exc.returncode)

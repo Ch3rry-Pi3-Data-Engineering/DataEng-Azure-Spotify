@@ -1,0 +1,16 @@
+data_factory_id = "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.DataFactory/factories/<factory-name>"
+sql_linked_service_name = "lsqldb-spotify-dev"
+adls_linked_service_name = "lsadls-spotify"
+
+pipeline_name = "incremental_ingestion"
+cdc_dataset_name = "ds_spotify_cdc_json"
+sql_dataset_name = "ds_spotify_sql_source"
+sink_dataset_name = "ds_spotify_bronze_parquet"
+
+lookup_container = "bronze"
+lookup_folder = "cdc"
+lookup_file = "cdc.json"
+
+sink_container = "bronze"
+sink_folder = "Users"
+sink_file = "@{concat(pipeline().parameters.table,'_',variables('current'))}.parquet"

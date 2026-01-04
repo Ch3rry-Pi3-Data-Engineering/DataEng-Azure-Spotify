@@ -50,3 +50,21 @@ resource "azurerm_storage_container" "medallion" {
   container_access_type = "private"
 }
 
+resource "azurerm_storage_blob" "cdc_json" {
+  name                   = "cdc/cdc.json"
+  storage_account_name   = azurerm_storage_account.main.name
+  storage_container_name = azurerm_storage_container.medallion["bronze"].name
+  type                   = "Block"
+  source                 = "${path.module}/../../data_scripts/cdc.json"
+  content_type           = "application/json"
+}
+
+resource "azurerm_storage_blob" "cdc_empty_json" {
+  name                   = "cdc/empty.json"
+  storage_account_name   = azurerm_storage_account.main.name
+  storage_container_name = azurerm_storage_container.medallion["bronze"].name
+  type                   = "Block"
+  source                 = "${path.module}/../../data_scripts/empty.json"
+  content_type           = "application/json"
+}
+
