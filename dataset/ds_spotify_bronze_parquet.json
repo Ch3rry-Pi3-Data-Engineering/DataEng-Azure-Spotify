@@ -1,0 +1,45 @@
+{
+	"name": "ds_spotify_bronze_parquet",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "lsadls-spotify",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"container": {
+				"type": "String",
+				"defaultValue": "String"
+			},
+			"file": {
+				"type": "String",
+				"defaultValue": "String"
+			},
+			"folder": {
+				"type": "String",
+				"defaultValue": "String"
+			}
+		},
+		"annotations": [],
+		"type": "Parquet",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobFSLocation",
+				"fileName": {
+					"value": "@{dataset().file}",
+					"type": "Expression"
+				},
+				"folderPath": {
+					"value": "@{dataset().folder}",
+					"type": "Expression"
+				},
+				"fileSystem": {
+					"value": "@{dataset().container}",
+					"type": "Expression"
+				}
+			},
+			"compressionCodec": "snappy"
+		},
+		"schema": []
+	},
+	"type": "Microsoft.DataFactory/factories/datasets"
+}

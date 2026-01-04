@@ -30,11 +30,34 @@
 				}
 			},
 			{
+				"name": "current_time",
+				"type": "SetVariable",
+				"dependsOn": [],
+				"policy": {
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"variableName": "current",
+					"value": {
+						"value": "@utcNow()",
+						"type": "Expression"
+					}
+				}
+			},
+			{
 				"name": "sql_to_datalake",
 				"type": "Copy",
 				"dependsOn": [
 					{
 						"activity": "last_cdc",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "current_time",
 						"dependencyConditions": [
 							"Succeeded"
 						]
@@ -57,7 +80,7 @@
 						"partitionOption": "None"
 					},
 					"sink": {
-						"type": "JsonSink"
+						"type": "ParquetSink"
 					},
 					"enableStaging": false
 				},
@@ -73,12 +96,12 @@
 				],
 				"outputs": [
 					{
-						"referenceName": "ds_spotify_bronze_json",
+						"referenceName": "ds_spotify_bronze_parquet",
 						"type": "DatasetReference",
 						"parameters": {
 							"container": "bronze",
-							"file": "@{pipeline().parameters.table}.json",
-							"folder": "@{pipeline().parameters.table}"
+							"file": "@{concat(pipeline().parameters.table,'_',variables('current'))}.parquet",
+							"folder": "Users"
 						}
 					}
 				]
@@ -98,8 +121,14 @@
 				"defaultValue": "String"
 			}
 		},
+		"variables": {
+			"current": {
+				"type": "String",
+				"defaultValue": "String"
+			}
+		},
 		"annotations": [],
-		"lastPublishTime": "2026-01-04T19:17:20Z"
+		"lastPublishTime": "2026-01-04T19:48:11Z"
 	},
 	"type": "Microsoft.DataFactory/factories/pipelines"
 }
