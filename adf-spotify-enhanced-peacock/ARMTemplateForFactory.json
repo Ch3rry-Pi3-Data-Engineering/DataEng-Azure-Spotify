@@ -1,0 +1,60 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "adf-spotify-enhanced-peacock"
+		},
+		"lsadls-spotify_accountKey": {
+			"type": "secureString",
+			"metadata": "Secure string for 'accountKey' of 'lsadls-spotify'"
+		},
+		"lsqldb-spotify-dev_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'lsqldb-spotify-dev'"
+		},
+		"lsadls-spotify_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "https://stspotifywealthypegasus.dfs.core.windows.net/"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/lsadls-spotify')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Linked services for Azure SQL Database and ADLS Gen2",
+				"annotations": [],
+				"type": "AzureBlobFS",
+				"typeProperties": {
+					"url": "[parameters('lsadls-spotify_properties_typeProperties_url')]",
+					"accountKey": {
+						"type": "SecureString",
+						"value": "[parameters('lsadls-spotify_accountKey')]"
+					}
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/lsqldb-spotify-dev')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Linked services for Azure SQL Database and ADLS Gen2",
+				"annotations": [],
+				"type": "AzureSqlDatabase",
+				"typeProperties": {
+					"connectionString": "[parameters('lsqldb-spotify-dev_connectionString')]"
+				}
+			},
+			"dependsOn": []
+		}
+	]
+}
