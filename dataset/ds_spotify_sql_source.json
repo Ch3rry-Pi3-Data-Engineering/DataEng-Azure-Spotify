@@ -1,0 +1,32 @@
+{
+	"name": "ds_spotify_sql_source",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "lsqldb-spotify-dev",
+			"type": "LinkedServiceReference"
+		},
+		"parameters": {
+			"schema": {
+				"type": "String",
+				"defaultValue": "String"
+			},
+			"table": {
+				"type": "String",
+				"defaultValue": "String"
+			}
+		},
+		"annotations": [],
+		"type": "AzureSqlTable",
+		"typeProperties": {
+			"schema": {
+				"value": "@{dataset().schema}",
+				"type": "Expression"
+			},
+			"table": {
+				"value": "@{dataset().table}",
+				"type": "Expression"
+			}
+		}
+	},
+	"type": "Microsoft.DataFactory/factories/datasets"
+}

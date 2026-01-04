@@ -1,0 +1,105 @@
+{
+	"name": "incremental_ingestion",
+	"properties": {
+		"activities": [
+			{
+				"name": "last_cdc",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "JsonSource"
+					},
+					"dataset": {
+						"referenceName": "ds_spotify_cdc_json",
+						"type": "DatasetReference",
+						"parameters": {
+							"container": "bronze",
+							"file": "cdc.json",
+							"folder": "cdc"
+						}
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "sql_to_datalake",
+				"type": "Copy",
+				"dependsOn": [
+					{
+						"activity": "last_cdc",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "SqlSource",
+						"sqlReaderQuery": {
+							"value": "SELECT * FROM @{pipeline().parameters.schema}.@{pipeline().parameters.table} WHERE @{pipeline().parameters.cdc_col} > '@{activity('last_cdc').output.value[0].cdc}'",
+							"type": "Expression"
+						},
+						"partitionOption": "None"
+					},
+					"sink": {
+						"type": "JsonSink"
+					},
+					"enableStaging": false
+				},
+				"inputs": [
+					{
+						"referenceName": "ds_spotify_sql_source",
+						"type": "DatasetReference",
+						"parameters": {
+							"schema": "@{pipeline().parameters.schema}",
+							"table": "@{pipeline().parameters.table}"
+						}
+					}
+				],
+				"outputs": [
+					{
+						"referenceName": "ds_spotify_bronze_json",
+						"type": "DatasetReference",
+						"parameters": {
+							"container": "bronze",
+							"file": "@{pipeline().parameters.table}.json",
+							"folder": "@{pipeline().parameters.table}"
+						}
+					}
+				]
+			}
+		],
+		"parameters": {
+			"cdc_col": {
+				"type": "String",
+				"defaultValue": "String"
+			},
+			"schema": {
+				"type": "String",
+				"defaultValue": "String"
+			},
+			"table": {
+				"type": "String",
+				"defaultValue": "String"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-01-04T19:17:20Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
