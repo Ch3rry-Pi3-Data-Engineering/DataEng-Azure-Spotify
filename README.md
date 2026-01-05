@@ -26,13 +26,26 @@ $env:AZUREAD_ADMIN_LOGIN = "your.name@domain.com"
 ```
 Auto-generated values are written to `terraform/03_sql_database/terraform.tfvars` (gitignored).
 
+For Databricks Unity Catalog automation, add a `.env` file (gitignored):
+```
+DATABRICKS_ACCOUNT_ID=...
+DATABRICKS_CLIENT_ID=...
+DATABRICKS_CLIENT_SECRET=...
+```
+
+If you run Terraform manually instead of the script, set `TF_VAR_databricks_account_id`, `TF_VAR_databricks_client_id`, and `TF_VAR_databricks_client_secret` or keep `terraform/10_databricks_uc/terraform.tfvars` around.
+
 ## Project Structure
 - terraform/01_resource_group: Azure resource group
 - terraform/02_storage_account: ADLS Gen2 storage account + medallion containers
 - terraform/03_sql_database: Azure SQL Server + dev database
 - terraform/04_data_factory: Azure Data Factory v2
 - terraform/05_adf_linked_services: ADF linked services (SQL + ADLS Gen2)
-- terraform/06_adf_pipeline_incremental: ADF datasets + incremental ingestion pipeline
+- terraform/06_adf_pipeline_incremental_arm: ADF datasets + incremental ingestion pipeline (ARM/azapi)
+- terraform/07_monitoring: Azure Monitor alerts (Log Analytics + Action Group email)
+- terraform/08_databricks: Azure Databricks workspace (Premium)
+- terraform/09_databricks_access_connector: Databricks access connector + Storage Blob Data Contributor role
+- terraform/10_databricks_uc: Unity Catalog catalog/schema + storage credential + external locations
 - scripts/: Deploy/destroy helpers (auto-writes terraform.tfvars)
 - guides/setup.md: Detailed setup guide
 - data_scripts/: SQL/scripts for data loading
@@ -46,10 +59,15 @@ python scripts\deploy.py --sql-only
 python scripts\deploy.py --datafactory-only
 python scripts\deploy.py --adf-links-only
 python scripts\deploy.py --adf-pipeline-only
+python scripts\deploy.py --monitoring-only
+python scripts\deploy.py --databricks-only
+python scripts\deploy.py --databricks-access-connector-only
+python scripts\deploy.py --databricks-uc-only
 python scripts\deploy.py --sql-only --sql-init
 python scripts\deploy.py --skip-sql-init
 python scripts\deploy.py --skip-adf-git-check
 ```
+Full deploys use the ARM/azapi pipeline module (`incremental_ingestion_arm`) by default.
 `--sql-init` runs `data_scripts/spotify_initial_load.sql` using `sqlcmd`.
 Full deploys run the SQL init step unless `--skip-sql-init` is provided.
 The ADF step prompts you to confirm GitHub linking unless `--skip-adf-git-check` is provided.
@@ -87,12 +105,50 @@ sudo yum install -y sqlcmd
 Linked services for SQL and ADLS Gen2 are created via Terraform in `terraform/05_adf_linked_services`.
 
 ## ADF Incremental Pipeline
-Datasets and the incremental ingestion pipeline are created via Terraform in `terraform/06_adf_pipeline_incremental`.
-The pipeline reads per-table CDC JSON files, ingests to Parquet, and updates the CDC markers when new rows are present.
-Default loop input lives in `data_scripts/loop_input.json`. Set the pipeline `loop_input` parameter type to Array and paste this JSON into the default value in ADF Studio (the Terraform provider does not set default values).
+Datasets and the incremental ingestion pipeline are created via Terraform. The ARM/azapi module in `terraform/06_adf_pipeline_incremental_arm` sets `loop_input` defaults from `data_scripts/loop_input.json`.
+The pipeline writes the latest CDC value (max from the source table) back into `bronze/<table>_cdc/cdc.json`. The seeded value starts as `{"cdc":"1900-01-01"}`, and after a successful run it becomes the newest CDC value from the table, e.g. `{"cdc":"2025-10-07T19:49:56"}`.
+Alerting is handled by the Azure Monitor module, not by a pipeline Web activity.
+
+```mermaid
+graph LR
+    A[ForEach table] --> B[Lookup last_cdc]
+    B --> C[Set current_time]
+    C --> D[Copy sql_to_datalake]
+    D --> E{Rows read?}
+    E -->|Yes| F[Script max_cdc]
+    F --> G[Copy update_last_cdc -> bronze/<table>_cdc/cdc.json]
+    E -->|No| H[Delete empty parquet]
+```
 
 ## ADLS Seed Files
 The storage module uploads `data_scripts/cdc.json` and `data_scripts/empty.json` into `bronze/<table>_cdc` for each table in the loop input file, plus `bronze/FactStream`.
+
+## Azure Monitor Alerts
+The monitoring module (`terraform/07_monitoring`) sets up Log Analytics diagnostics for ADF pipeline runs and sends Action Group emails for both success and failure.
+Alerts run every 5 minutes and only send an email if a matching run occurred within the last 5 minutes.
+
+## Azure Databricks
+The Databricks workspace is provisioned by `terraform/08_databricks` with the Premium SKU and an auto-named managed resource group.
+
+## Databricks Access Connector
+The access connector module (`terraform/09_databricks_access_connector`) creates a managed identity and assigns it the Storage Blob Data Contributor role on the storage account.
+
+## Databricks Unity Catalog (Automation)
+The Unity Catalog module (`terraform/10_databricks_uc`) creates:
+- Catalog: `spotify`
+- Schemas: `silver`, `gold`
+- Storage credential (managed identity via the access connector)
+- External locations for bronze, silver, and gold containers
+
+By default, the catalog managed location uses the silver container. Override it by setting `catalog_storage_root` in `terraform/10_databricks_uc/terraform.tfvars`.
+
+The deploy script reads Databricks OAuth credentials from `.env` and writes them to the UC module's `terraform.tfvars` (gitignored):
+```
+DATABRICKS_ACCOUNT_ID=...
+DATABRICKS_CLIENT_ID=...
+DATABRICKS_CLIENT_SECRET=...
+```
+See `guides/setup.md` for the Databricks Account Console steps (service principal, admin role, OAuth secret).
 
 Destroy:
 ```powershell

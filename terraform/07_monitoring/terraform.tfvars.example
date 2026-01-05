@@ -1,0 +1,13 @@
+resource_group_name = "rg-spotify-<suffix>"
+location = "eastus2"
+data_factory_id = "/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.DataFactory/factories/<factory>"
+pipeline_name = "incremental_ingestion_arm"
+email_to = "the_rfc@hotmail.co.uk"
+workspace_name_prefix = "law-spotify"
+action_group_name_prefix = "ag-spotify"
+action_group_short_name = "agspot"
+alert_name_prefix = "alert-spotify"
+alert_frequency_minutes = 5
+alert_window_minutes = 5
+alert_failure_severity = 2
+alert_success_severity = 3

@@ -16,25 +16,25 @@ variable "adls_linked_service_name" {
 variable "pipeline_name" {
   type        = string
   description = "ADF pipeline name"
-  default     = "incremental_ingestion"
+  default     = "incremental_ingestion_arm"
 }
 
 variable "cdc_dataset_name" {
   type        = string
   description = "ADF dataset name for the CDC lookup JSON"
-  default     = "ds_spotify_cdc_json"
+  default     = "ds_spotify_cdc_json_arm"
 }
 
 variable "sql_dataset_name" {
   type        = string
   description = "ADF dataset name for the SQL source"
-  default     = "ds_spotify_sql_source"
+  default     = "ds_spotify_sql_source_arm"
 }
 
 variable "sink_dataset_name" {
   type        = string
   description = "ADF dataset name for the ADLS sink"
-  default     = "ds_spotify_bronze_parquet"
+  default     = "ds_spotify_bronze_parquet_arm"
 }
 
 variable "lookup_container" {

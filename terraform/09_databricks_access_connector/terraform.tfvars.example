@@ -1,0 +1,4 @@
+resource_group_name = "rg-spotify-example"
+location = "eastus2"
+storage_account_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-spotify-example/providers/Microsoft.Storage/storageAccounts/stspotifyexample"
+access_connector_name_prefix = "dbc-spotify-ac"

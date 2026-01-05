@@ -1,5 +1,5 @@
 output "pipeline_name" {
-  value = azurerm_data_factory_pipeline.incremental.name
+  value = azapi_resource.pipeline.name
 }
 
 output "cdc_dataset_name" {

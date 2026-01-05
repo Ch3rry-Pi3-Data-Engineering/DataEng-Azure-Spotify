@@ -1,0 +1,5 @@
+resource_group_name = "rg-spotify-example"
+location = "eastus2"
+workspace_name_prefix = "dbw-spotify"
+managed_resource_group_name_prefix = "rg-databricks-spotify"
+sku = "premium"

@@ -49,7 +49,11 @@ After installing, re-open PowerShell and re-run terraform version.
 - terraform/03_sql_database: Azure SQL Server + dev database
 - terraform/04_data_factory: Azure Data Factory v2
 - terraform/05_adf_linked_services: ADF linked services (SQL + ADLS Gen2)
-- terraform/06_adf_pipeline_incremental: ADF datasets + incremental ingestion pipeline
+- terraform/06_adf_pipeline_incremental_arm: ADF datasets + incremental ingestion pipeline (ARM/azapi)
+- terraform/07_monitoring: Azure Monitor alerts (Log Analytics + Action Group email)
+- terraform/08_databricks: Azure Databricks workspace (Premium)
+- terraform/09_databricks_access_connector: Databricks access connector + Storage Blob Data Contributor role
+- terraform/10_databricks_uc: Unity Catalog catalog/schema + storage credential + external locations
 - scripts/: Helper scripts to deploy/destroy Terraform resources
 
 ## Configure Terraform
@@ -84,10 +88,15 @@ python scripts\deploy.py --sql-only
 python scripts\deploy.py --datafactory-only
 python scripts\deploy.py --adf-links-only
 python scripts\deploy.py --adf-pipeline-only
+python scripts\deploy.py --monitoring-only
+python scripts\deploy.py --databricks-only
+python scripts\deploy.py --databricks-access-connector-only
+python scripts\deploy.py --databricks-uc-only
 python scripts\deploy.py --sql-only --sql-init
 python scripts\deploy.py --skip-sql-init
 python scripts\deploy.py --skip-adf-git-check
 ```
+Note: `--adf-pipeline-only` deploys the ARM/azapi pipeline module.
 
 ## Azure Data Factory GitHub Linking (Manual)
 Terraform does not configure ADF Git integration. After ADF is created, link it in ADF Studio:
@@ -131,6 +140,39 @@ Use a GitHub personal access token (PAT) and link it in Databricks:
 4) Add Git provider = GitHub and paste the PAT.
 5) In Repos, click "Add Repo", paste the repo URL, and create.
 
+## Databricks Admin Access & MFA
+Databricks sign-in follows the Entra ID user you log in with. To avoid relying on someone else’s MFA device:
+- Create or use your own Entra ID user.
+- Add that user as an account admin or workspace admin in the Databricks Account Console.
+- Enroll MFA for that user on your own device.
+
+Storage access for the medallion containers is handled by the Databricks access connector (managed identity), so you do not need a service principal or Key Vault for basic read/write access.
+
+## Databricks Unity Catalog Automation
+Unity Catalog objects are created via Terraform in `terraform/10_databricks_uc`. This requires a Databricks account service principal with an OAuth secret.
+The module creates catalog `spotify`, schemas `silver` + `gold`, a managed identity storage credential, and external locations for bronze/silver/gold.
+
+1) Open the Databricks Account Console: `https://accounts.azuredatabricks.net`
+2) Go to User management -> Service principals -> Add service principal.
+3) Name it (example: `sp-databricks-admin`).
+4) Roles tab: enable Account admin (or add it to the Admins group).
+5) Permissions tab: grant your user Manage + Use.
+6) Credentials & secrets tab: create an OAuth secret and copy the Client ID + Secret.
+7) Create a `.env` file in the repo root (gitignored) and add:
+```
+DATABRICKS_ACCOUNT_ID=...
+DATABRICKS_CLIENT_ID=...
+DATABRICKS_CLIENT_SECRET=...
+```
+The deploy script auto-loads `.env` and writes the UC module's `terraform.tfvars` for you.
+If you run Terraform directly, either keep `terraform/10_databricks_uc/terraform.tfvars` or export `TF_VAR_databricks_account_id`, `TF_VAR_databricks_client_id`, and `TF_VAR_databricks_client_secret` before running `terraform apply`.
+By default, the catalog managed location uses the silver container. Override it by setting `catalog_storage_root` in `terraform/10_databricks_uc/terraform.tfvars`.
+
+Deploy Unity Catalog only:
+```powershell
+python scripts\deploy.py --databricks-uc-only
+```
+
 ## Azure Data Factory Linked Services (Terraform)
 The SQL and ADLS Gen2 linked services are created by Terraform in `terraform/05_adf_linked_services`.
 
@@ -154,8 +196,10 @@ Terraform creates ADF resources (linked services, datasets, pipelines) in Live m
 Note: `adf_publish` is an auto-generated branch created by ADF when you publish. It is not meant to be merged into `main` and will be recreated if deleted.
 
 ## Incremental Ingestion Pipeline
-The `incremental_ingestion` pipeline is created by Terraform and expects a single parameter:
-- `loop_input` (Array). Paste the JSON array into the default value; each item must include `schema`, `table`, `cdc_col`, and `from_date`.
+The incremental pipeline is created by Terraform. The ARM/azapi module (`incremental_ingestion_arm`) sets the default value from `data_scripts/loop_input.json`.
+
+The `incremental_ingestion` pipeline expects a single parameter:
+- `loop_input` (Array). The default is pulled from `data_scripts/loop_input.json`; each item must include `schema`, `table`, `cdc_col`, and `from_date`.
   - `from_date` is optional; when empty, the pipeline uses the CDC lookup file for that table.
   - Use a SQL-friendly format, e.g. `2026-01-04` or `2026-01-04T22:02:03.6147312` (no trailing `Z`).
 
@@ -165,9 +209,23 @@ The pipeline flow is:
 3) Copy SQL data to Parquet in `bronze/<table>/<table>_<current>`.
 4) If data was read, query max CDC and overwrite `bronze/<table>_cdc/cdc.json`. If no rows, delete the empty Parquet file.
 
-The delete activity requires logging settings with the ADLS linked service (configured in Terraform).
+Alerting is handled by the Azure Monitor module instead of pipeline activities.
 
-Default loop input lives in `data_scripts/loop_input.json`. Paste it into the pipeline parameter default value, or override it for a smaller debug run:
+The delete activity requires logging settings with the ADLS linked service (configured in Terraform).
+The CDC file starts at `{"cdc":"1900-01-01"}` and is overwritten with the max CDC value from the table after a successful run, e.g. `{"cdc":"2025-10-07T19:49:56"}`.
+
+```mermaid
+graph LR
+    A[ForEach table] --> B[Lookup last_cdc]
+    B --> C[Set current_time]
+    C --> D[Copy sql_to_datalake]
+    D --> E{Rows read?}
+    E -->|Yes| F[Script max_cdc]
+    F --> G[Copy update_last_cdc -> bronze/<table>_cdc/cdc.json]
+    E -->|No| H[Delete empty parquet]
+```
+
+Default loop input lives in `data_scripts/loop_input.json`. Terraform writes it as the default value; override it for a smaller debug run:
 ```
 [
   {
@@ -182,6 +240,18 @@ Default loop input lives in `data_scripts/loop_input.json`. Paste it into the pi
 Test runs:
 - With `from_date` set, the pipeline uses that value for the CDC filter.
 - With `from_date` empty, the pipeline uses the last CDC value from the lookup file.
+
+## Azure Monitor Alerts (Log Analytics + Action Group)
+The monitoring module creates a Log Analytics workspace, configures ADF diagnostics for PipelineRuns, and sends Action Group emails on success and failure.
+
+1) Deploy monitoring:
+```powershell
+python scripts\deploy.py --monitoring-only
+```
+
+Notes:
+- Default recipient is `the_rfc@hotmail.co.uk` (override via `terraform/07_monitoring/terraform.tfvars`).
+- Alerts run every 5 minutes and only fire if at least one matching run occurred in the last 5 minutes.
 
 ## Seed the SQL Database
 To run `data_scripts/spotify_initial_load.sql` against the new database:
@@ -236,11 +306,16 @@ python scripts\destroy.py --sql-only
 python scripts\destroy.py --datafactory-only
 python scripts\destroy.py --adf-links-only
 python scripts\destroy.py --adf-pipeline-only
+python scripts\destroy.py --monitoring-only
+python scripts\destroy.py --databricks-only
+python scripts\destroy.py --databricks-access-connector-only
+python scripts\destroy.py --databricks-uc-only
 ```
 
 ## Notes
 - Storage account names must be 3-24 characters and lowercase letters/numbers.
 - The storage account is created with hierarchical namespace enabled (ADLS Gen2).
+- Default containers include bronze/silver/gold.
 - The deploy script creates bronze, silver, and gold containers for the medallion architecture.
 - The storage module uploads data_scripts/cdc.json and data_scripts/empty.json into bronze/<table>_cdc for each table in data_scripts/loop_input.json (or loop_input.txt), plus bronze/FactStream.
 - Storage replication defaults to LRS (locally redundant storage).

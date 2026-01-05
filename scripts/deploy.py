@@ -27,16 +27,36 @@ DEFAULTS = {
     "sql_zone_redundant": False,
     "adf_sql_linked_service_name": "lsqldb-spotify-dev",
     "adf_adls_linked_service_name": "lsadls-spotify",
-    "adf_pipeline_name": "incremental_ingestion",
-    "adf_cdc_dataset_name": "ds_spotify_cdc_json",
-    "adf_sql_dataset_name": "ds_spotify_sql_source",
-    "adf_sink_dataset_name": "ds_spotify_bronze_parquet",
+    "adf_pipeline_arm_name": "incremental_ingestion_arm",
+    "adf_cdc_dataset_arm_name": "ds_spotify_cdc_json_arm",
+    "adf_sql_dataset_arm_name": "ds_spotify_sql_source_arm",
+    "adf_sink_dataset_arm_name": "ds_spotify_bronze_parquet_arm",
     "adf_lookup_container": "bronze",
     "adf_lookup_folder": "@{item().table}_cdc",
     "adf_lookup_file": "cdc.json",
     "adf_sink_container": "bronze",
     "adf_sink_folder": "@item().table",
     "adf_sink_file": "@concat(item().table,'_',variables('current'))",
+    "monitoring_workspace_name_prefix": "law-spotify",
+    "monitoring_action_group_name_prefix": "ag-spotify",
+    "monitoring_action_group_short_name": "agspot",
+    "monitoring_alert_name_prefix": "alert-spotify",
+    "monitoring_email_to": "the_rfc@hotmail.co.uk",
+    "monitoring_alert_frequency": 5,
+    "monitoring_alert_window": 5,
+    "monitoring_alert_failure_severity": 2,
+    "monitoring_alert_success_severity": 3,
+    "databricks_workspace_name_prefix": "dbw-spotify",
+    "databricks_managed_rg_name_prefix": "rg-databricks-spotify",
+    "databricks_sku": "premium",
+    "databricks_access_connector_name_prefix": "dbc-spotify-ac",
+    "databricks_uc_catalog_name": "spotify",
+    "databricks_uc_schema_name": "silver",
+    "databricks_uc_storage_credential_name": "sc-spotify-mi",
+    "databricks_uc_bronze_location_name": "bronze",
+    "databricks_uc_silver_location_name": "silver",
+    "databricks_uc_gold_schema_name": "gold",
+    "databricks_uc_gold_location_name": "gold",
 }
 
 SQLCMD_FALLBACK_PATHS = [
@@ -76,6 +96,23 @@ def run_sensitive(cmd, redacted_indices):
             display_cmd[index] = "***"
     print(f"\n$ {' '.join(display_cmd)}")
     subprocess.check_call(cmd)
+
+def load_env_file(path):
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):].strip()
+        if "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 def require_adf_git_linked(skip_check):
     if skip_check:
@@ -308,7 +345,7 @@ def write_adf_linked_services_tfvars(
     ]
     write_tfvars(linked_services_dir / "terraform.tfvars", items)
 
-def write_adf_pipeline_tfvars(
+def write_adf_pipeline_arm_tfvars(
     pipeline_dir,
     data_factory_id,
     sql_linked_service_name,
@@ -318,10 +355,10 @@ def write_adf_pipeline_tfvars(
         ("data_factory_id", data_factory_id),
         ("sql_linked_service_name", sql_linked_service_name),
         ("adls_linked_service_name", adls_linked_service_name),
-        ("pipeline_name", DEFAULTS["adf_pipeline_name"]),
-        ("cdc_dataset_name", DEFAULTS["adf_cdc_dataset_name"]),
-        ("sql_dataset_name", DEFAULTS["adf_sql_dataset_name"]),
-        ("sink_dataset_name", DEFAULTS["adf_sink_dataset_name"]),
+        ("pipeline_name", DEFAULTS["adf_pipeline_arm_name"]),
+        ("cdc_dataset_name", DEFAULTS["adf_cdc_dataset_arm_name"]),
+        ("sql_dataset_name", DEFAULTS["adf_sql_dataset_arm_name"]),
+        ("sink_dataset_name", DEFAULTS["adf_sink_dataset_arm_name"]),
         ("lookup_container", DEFAULTS["adf_lookup_container"]),
         ("lookup_folder", DEFAULTS["adf_lookup_folder"]),
         ("lookup_file", DEFAULTS["adf_lookup_file"]),
@@ -331,34 +368,70 @@ def write_adf_pipeline_tfvars(
     ]
     write_tfvars(pipeline_dir / "terraform.tfvars", items)
 
-def maybe_reset_pipeline_for_dataset_rename(pipeline_dir):
-    desired_cdc = get_tfvar_or_default(
-        pipeline_dir / "terraform.tfvars",
-        "cdc_dataset_name",
-        DEFAULTS["adf_cdc_dataset_name"],
-    )
-    desired_sql = get_tfvar_or_default(
-        pipeline_dir / "terraform.tfvars",
-        "sql_dataset_name",
-        DEFAULTS["adf_sql_dataset_name"],
-    )
-    desired_sink = get_tfvar_or_default(
-        pipeline_dir / "terraform.tfvars",
-        "sink_dataset_name",
-        DEFAULTS["adf_sink_dataset_name"],
-    )
-    current_cdc = get_output_optional(pipeline_dir, "cdc_dataset_name")
-    current_sql = get_output_optional(pipeline_dir, "sql_dataset_name")
-    current_sink = get_output_optional(pipeline_dir, "sink_dataset_name")
-    if not any([current_cdc, current_sql, current_sink]):
-        return
-    if (current_cdc, current_sql, current_sink) == (desired_cdc, desired_sql, desired_sink):
-        return
-    state = get_state_addresses(pipeline_dir)
-    if "azurerm_data_factory_pipeline.incremental" not in state:
-        return
-    print("Dataset names changed; removing pipeline to unblock dataset replacement.")
-    run(["terraform", f"-chdir={pipeline_dir}", "destroy", "-auto-approve", "-target=azurerm_data_factory_pipeline.incremental"])
+def write_monitoring_tfvars(monitoring_dir, rg_name, data_factory_id, pipeline_name):
+    items = [
+        ("resource_group_name", rg_name),
+        ("location", DEFAULTS["location"]),
+        ("data_factory_id", data_factory_id),
+        ("pipeline_name", pipeline_name),
+        ("workspace_name_prefix", DEFAULTS["monitoring_workspace_name_prefix"]),
+        ("action_group_name_prefix", DEFAULTS["monitoring_action_group_name_prefix"]),
+        ("action_group_short_name", DEFAULTS["monitoring_action_group_short_name"]),
+        ("alert_name_prefix", DEFAULTS["monitoring_alert_name_prefix"]),
+        ("email_to", DEFAULTS["monitoring_email_to"]),
+        ("alert_frequency_minutes", DEFAULTS["monitoring_alert_frequency"]),
+        ("alert_window_minutes", DEFAULTS["monitoring_alert_window"]),
+        ("alert_failure_severity", DEFAULTS["monitoring_alert_failure_severity"]),
+        ("alert_success_severity", DEFAULTS["monitoring_alert_success_severity"]),
+    ]
+    write_tfvars(monitoring_dir / "terraform.tfvars", items)
+
+def write_databricks_tfvars(databricks_dir, rg_name):
+    items = [
+        ("resource_group_name", rg_name),
+        ("location", DEFAULTS["location"]),
+        ("workspace_name_prefix", DEFAULTS["databricks_workspace_name_prefix"]),
+        ("managed_resource_group_name_prefix", DEFAULTS["databricks_managed_rg_name_prefix"]),
+        ("sku", DEFAULTS["databricks_sku"]),
+    ]
+    write_tfvars(databricks_dir / "terraform.tfvars", items)
+
+def write_databricks_access_connector_tfvars(access_connector_dir, rg_name, storage_account_id):
+    items = [
+        ("resource_group_name", rg_name),
+        ("location", DEFAULTS["location"]),
+        ("storage_account_id", storage_account_id),
+        ("access_connector_name_prefix", DEFAULTS["databricks_access_connector_name_prefix"]),
+    ]
+    write_tfvars(access_connector_dir / "terraform.tfvars", items)
+
+def write_databricks_uc_tfvars(
+    uc_dir,
+    databricks_host,
+    databricks_workspace_resource_id,
+    access_connector_id,
+    storage_account_name,
+):
+    databricks_account_id = get_env_required("DATABRICKS_ACCOUNT_ID")
+    databricks_client_id = get_env_required("DATABRICKS_CLIENT_ID")
+    databricks_client_secret = get_env_required("DATABRICKS_CLIENT_SECRET")
+    items = [
+        ("databricks_host", databricks_host),
+        ("databricks_account_id", databricks_account_id),
+        ("databricks_client_id", databricks_client_id),
+        ("databricks_client_secret", databricks_client_secret),
+        ("databricks_workspace_resource_id", databricks_workspace_resource_id),
+        ("access_connector_id", access_connector_id),
+        ("storage_account_name", storage_account_name),
+        ("catalog_name", DEFAULTS["databricks_uc_catalog_name"]),
+        ("schema_name", DEFAULTS["databricks_uc_schema_name"]),
+        ("gold_schema_name", DEFAULTS["databricks_uc_gold_schema_name"]),
+        ("storage_credential_name", DEFAULTS["databricks_uc_storage_credential_name"]),
+        ("bronze_location_name", DEFAULTS["databricks_uc_bronze_location_name"]),
+        ("silver_location_name", DEFAULTS["databricks_uc_silver_location_name"]),
+        ("gold_location_name", DEFAULTS["databricks_uc_gold_location_name"]),
+    ]
+    write_tfvars(uc_dir / "terraform.tfvars", items)
 
 def run_sql_script(sql_dir, admin_login, admin_password, script_path):
     if not script_path.exists():
@@ -447,19 +520,40 @@ if __name__ == "__main__":
         group.add_argument("--sql-only", action="store_true", help="Deploy only the SQL server + database stack")
         group.add_argument("--datafactory-only", action="store_true", help="Deploy only the data factory stack")
         group.add_argument("--adf-links-only", action="store_true", help="Deploy only the ADF linked services stack")
-        group.add_argument("--adf-pipeline-only", action="store_true", help="Deploy only the ADF pipeline stack")
+        group.add_argument(
+            "--adf-pipeline-only",
+            action="store_true",
+            help="Deploy only the ADF pipeline stack (ARM/azapi)",
+        )
+        group.add_argument("--monitoring-only", action="store_true", help="Deploy only the monitoring stack")
+        group.add_argument("--databricks-only", action="store_true", help="Deploy only the Databricks stack")
+        group.add_argument(
+            "--databricks-access-connector-only",
+            action="store_true",
+            help="Deploy only the Databricks access connector stack",
+        )
+        group.add_argument(
+            "--databricks-uc-only",
+            action="store_true",
+            help="Deploy only the Databricks Unity Catalog stack",
+        )
         parser.add_argument("--sql-init", action="store_true", help="Run the SQL init script after SQL deploy")
         parser.add_argument("--skip-sql-init", action="store_true", help="Skip SQL init on full deploy")
         parser.add_argument("--skip-adf-git-check", action="store_true", help="Skip manual ADF Git prompt")
         args = parser.parse_args()
 
         repo_root = Path(__file__).resolve().parent.parent
+        load_env_file(repo_root / ".env")
         rg_dir = repo_root / "terraform" / "01_resource_group"
         storage_dir = repo_root / "terraform" / "02_storage_account"
         sql_dir = repo_root / "terraform" / "03_sql_database"
         data_factory_dir = repo_root / "terraform" / "04_data_factory"
         linked_services_dir = repo_root / "terraform" / "05_adf_linked_services"
-        pipeline_dir = repo_root / "terraform" / "06_adf_pipeline_incremental"
+        pipeline_arm_dir = repo_root / "terraform" / "06_adf_pipeline_incremental_arm"
+        monitoring_dir = repo_root / "terraform" / "07_monitoring"
+        databricks_dir = repo_root / "terraform" / "08_databricks"
+        access_connector_dir = repo_root / "terraform" / "09_databricks_access_connector"
+        uc_dir = repo_root / "terraform" / "10_databricks_uc"
         full_deploy = not (
             args.rg_only
             or args.storage_only
@@ -467,6 +561,10 @@ if __name__ == "__main__":
             or args.datafactory_only
             or args.adf_links_only
             or args.adf_pipeline_only
+            or args.monitoring_only
+            or args.databricks_only
+            or args.databricks_access_connector_only
+            or args.databricks_uc_only
         )
         run_sql_init = args.sql_init or (full_deploy and not args.skip_sql_init)
 
@@ -531,15 +629,57 @@ if __name__ == "__main__":
             data_factory_id = get_output(data_factory_dir, "data_factory_id")
             sql_linked_service_name = get_output(linked_services_dir, "sql_linked_service_name")
             adls_linked_service_name = get_output(linked_services_dir, "adls_linked_service_name")
-            write_adf_pipeline_tfvars(
-                pipeline_dir,
+            write_adf_pipeline_arm_tfvars(
+                pipeline_arm_dir,
                 data_factory_id,
                 sql_linked_service_name,
                 adls_linked_service_name,
             )
-            run(["terraform", f"-chdir={pipeline_dir}", "init"])
-            maybe_reset_pipeline_for_dataset_rename(pipeline_dir)
-            run(["terraform", f"-chdir={pipeline_dir}", "apply", "-auto-approve"])
+            run(["terraform", f"-chdir={pipeline_arm_dir}", "init"])
+            run(["terraform", f"-chdir={pipeline_arm_dir}", "apply", "-auto-approve"])
+            sys.exit(0)
+
+        if args.monitoring_only:
+            run(["terraform", f"-chdir={rg_dir}", "init"])
+            rg_name = get_output(rg_dir, "resource_group_name")
+            data_factory_id = get_output(data_factory_dir, "data_factory_id")
+            pipeline_name = get_output_optional(pipeline_arm_dir, "pipeline_name") or DEFAULTS["adf_pipeline_arm_name"]
+            write_monitoring_tfvars(monitoring_dir, rg_name, data_factory_id, pipeline_name)
+            run(["terraform", f"-chdir={monitoring_dir}", "init"])
+            run(["terraform", f"-chdir={monitoring_dir}", "apply", "-auto-approve"])
+            sys.exit(0)
+
+        if args.databricks_only:
+            run(["terraform", f"-chdir={rg_dir}", "init"])
+            rg_name = get_output(rg_dir, "resource_group_name")
+            write_databricks_tfvars(databricks_dir, rg_name)
+            run(["terraform", f"-chdir={databricks_dir}", "init"])
+            run(["terraform", f"-chdir={databricks_dir}", "apply", "-auto-approve"])
+            sys.exit(0)
+
+        if args.databricks_access_connector_only:
+            run(["terraform", f"-chdir={rg_dir}", "init"])
+            rg_name = get_output(rg_dir, "resource_group_name")
+            storage_account_id = get_output(storage_dir, "storage_account_id")
+            write_databricks_access_connector_tfvars(access_connector_dir, rg_name, storage_account_id)
+            run(["terraform", f"-chdir={access_connector_dir}", "init"])
+            run(["terraform", f"-chdir={access_connector_dir}", "apply", "-auto-approve"])
+            sys.exit(0)
+
+        if args.databricks_uc_only:
+            databricks_host = get_output(databricks_dir, "databricks_workspace_url")
+            databricks_workspace_resource_id = get_output(databricks_dir, "databricks_workspace_id")
+            access_connector_id = get_output(access_connector_dir, "access_connector_id")
+            storage_account_name = get_output(storage_dir, "storage_account_name")
+            write_databricks_uc_tfvars(
+                uc_dir,
+                databricks_host,
+                databricks_workspace_resource_id,
+                access_connector_id,
+                storage_account_name,
+            )
+            run(["terraform", f"-chdir={uc_dir}", "init"])
+            run(["terraform", f"-chdir={uc_dir}", "apply", "-auto-approve"])
             sys.exit(0)
 
         write_rg_tfvars(rg_dir)
@@ -584,15 +724,42 @@ if __name__ == "__main__":
 
         sql_linked_service_name = get_output(linked_services_dir, "sql_linked_service_name")
         adls_linked_service_name = get_output(linked_services_dir, "adls_linked_service_name")
-        write_adf_pipeline_tfvars(
-            pipeline_dir,
+        write_adf_pipeline_arm_tfvars(
+            pipeline_arm_dir,
             data_factory_id,
             sql_linked_service_name,
             adls_linked_service_name,
         )
-        run(["terraform", f"-chdir={pipeline_dir}", "init"])
-        maybe_reset_pipeline_for_dataset_rename(pipeline_dir)
-        run(["terraform", f"-chdir={pipeline_dir}", "apply", "-auto-approve"])
+        run(["terraform", f"-chdir={pipeline_arm_dir}", "init"])
+        run(["terraform", f"-chdir={pipeline_arm_dir}", "apply", "-auto-approve"])
+
+        pipeline_name = get_output_optional(pipeline_arm_dir, "pipeline_name") or DEFAULTS["adf_pipeline_arm_name"]
+        write_monitoring_tfvars(monitoring_dir, rg_name, data_factory_id, pipeline_name)
+        run(["terraform", f"-chdir={monitoring_dir}", "init"])
+        run(["terraform", f"-chdir={monitoring_dir}", "apply", "-auto-approve"])
+
+        write_databricks_tfvars(databricks_dir, rg_name)
+        run(["terraform", f"-chdir={databricks_dir}", "init"])
+        run(["terraform", f"-chdir={databricks_dir}", "apply", "-auto-approve"])
+
+        storage_account_id = get_output(storage_dir, "storage_account_id")
+        write_databricks_access_connector_tfvars(access_connector_dir, rg_name, storage_account_id)
+        run(["terraform", f"-chdir={access_connector_dir}", "init"])
+        run(["terraform", f"-chdir={access_connector_dir}", "apply", "-auto-approve"])
+
+        databricks_host = get_output(databricks_dir, "databricks_workspace_url")
+        databricks_workspace_resource_id = get_output(databricks_dir, "databricks_workspace_id")
+        access_connector_id = get_output(access_connector_dir, "access_connector_id")
+        storage_account_name = get_output(storage_dir, "storage_account_name")
+        write_databricks_uc_tfvars(
+            uc_dir,
+            databricks_host,
+            databricks_workspace_resource_id,
+            access_connector_id,
+            storage_account_name,
+        )
+        run(["terraform", f"-chdir={uc_dir}", "init"])
+        run(["terraform", f"-chdir={uc_dir}", "apply", "-auto-approve"])
     except subprocess.CalledProcessError as exc:
         print(f"Command failed: {exc}")
         sys.exit(exc.returncode)
