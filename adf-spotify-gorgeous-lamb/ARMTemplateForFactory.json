@@ -1,0 +1,1054 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "adf-spotify-gorgeous-lamb"
+		},
+		"lsadls-spotify_accountKey": {
+			"type": "secureString",
+			"metadata": "Secure string for 'accountKey' of 'lsadls-spotify'"
+		},
+		"lsqldb-spotify-dev_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'lsqldb-spotify-dev'"
+		},
+		"lsadls-spotify_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "https://stspotifywealthypegasus.dfs.core.windows.net/"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/incremental_ingestion')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "for_each_table",
+						"type": "ForEach",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@pipeline().parameters.loop_input",
+								"type": "Expression"
+							},
+							"isSequential": true,
+							"activities": [
+								{
+									"name": "last_cdc",
+									"type": "Lookup",
+									"dependsOn": [],
+									"policy": {
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "JsonSource"
+										},
+										"dataset": {
+											"referenceName": "ds_spotify_cdc_json",
+											"type": "DatasetReference",
+											"parameters": {
+												"container": "bronze",
+												"file": "cdc.json",
+												"folder": "@{item().table}_cdc"
+											}
+										},
+										"firstRowOnly": false
+									}
+								},
+								{
+									"name": "current_time",
+									"type": "SetVariable",
+									"dependsOn": [],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "current",
+										"value": {
+											"value": "@utcNow()",
+											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "sql_to_datalake",
+									"type": "Copy",
+									"dependsOn": [
+										{
+											"activity": "last_cdc",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										},
+										{
+											"activity": "current_time",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SqlSource",
+											"sqlReaderQuery": {
+												"value": "SELECT * FROM @{item().schema}.@{item().table} WHERE @{item().cdc_col} > '@{if(empty(item().from_date),activity('last_cdc').output.value[0].cdc,item().from_date)}'",
+												"type": "Expression"
+											},
+											"partitionOption": "None"
+										},
+										"sink": {
+											"type": "ParquetSink"
+										},
+										"enableStaging": false
+									},
+									"inputs": [
+										{
+											"referenceName": "ds_spotify_sql_source",
+											"type": "DatasetReference",
+											"parameters": {
+												"schema": "@{item().schema}",
+												"table": "@{item().table}"
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "ds_spotify_bronze_parquet",
+											"type": "DatasetReference",
+											"parameters": {
+												"container": "bronze",
+												"file": "@concat(item().table,'_',variables('current'))",
+												"folder": "@item().table"
+											}
+										}
+									]
+								},
+								{
+									"name": "if_incremental_data",
+									"type": "IfCondition",
+									"dependsOn": [
+										{
+											"activity": "sql_to_datalake",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"userProperties": [],
+									"typeProperties": {
+										"expression": {
+											"value": "@greater(activity('sql_to_datalake').output.dataRead, 0)",
+											"type": "Expression"
+										},
+										"ifFalseActivities": [
+											{
+												"name": "delete_empty_file",
+												"type": "Delete",
+												"dependsOn": [],
+												"policy": {
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"dataset": {
+														"referenceName": "ds_spotify_bronze_parquet",
+														"type": "DatasetReference",
+														"parameters": {
+															"container": "bronze",
+															"file": "@concat(item().table,'_',variables('current'))",
+															"folder": "@item().table"
+														}
+													},
+													"logStorageSettings": {
+														"linkedServiceName": {
+															"referenceName": "lsadls-spotify",
+															"type": "LinkedServiceReference"
+														},
+														"path": ""
+													},
+													"enableLogging": true
+												}
+											}
+										],
+										"ifTrueActivities": [
+											{
+												"name": "max_cdc",
+												"type": "Script",
+												"dependsOn": [],
+												"policy": {
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"linkedServiceName": {
+													"referenceName": "lsqldb-spotify-dev",
+													"type": "LinkedServiceReference"
+												},
+												"typeProperties": {
+													"scripts": [
+														{
+															"type": "Query",
+															"text": {
+																"value": "SELECT MAX(@{item().cdc_col}) as cdc FROM @{item().schema}.@{item().table}",
+																"type": "Expression"
+															}
+														}
+													]
+												}
+											},
+											{
+												"name": "update_last_cdc",
+												"type": "Copy",
+												"dependsOn": [
+													{
+														"activity": "max_cdc",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "JsonSource",
+														"additionalColumns": [
+															{
+																"name": "cdc",
+																"value": {
+																	"value": "@activity('max_cdc').output.resultSets[0].rows[0].cdc",
+																	"type": "Expression"
+																}
+															}
+														]
+													},
+													"sink": {
+														"type": "JsonSink"
+													},
+													"enableStaging": false
+												},
+												"inputs": [
+													{
+														"referenceName": "ds_spotify_cdc_json",
+														"type": "DatasetReference",
+														"parameters": {
+															"container": "bronze",
+															"file": "empty.json",
+															"folder": "@{item().table}_cdc"
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "ds_spotify_cdc_json",
+														"type": "DatasetReference",
+														"parameters": {
+															"container": "bronze",
+															"file": "cdc.json",
+															"folder": "@{item().table}_cdc"
+														}
+													}
+												]
+											}
+										]
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"loop_input": {
+						"type": "array",
+						"defaultValue": [
+							{
+								"schema": "dbo",
+								"table": "DimUser",
+								"cdc_col": "updated_at",
+								"from_date": ""
+							},
+							{
+								"schema": "dbo",
+								"table": "DimTrack",
+								"cdc_col": "updated_at",
+								"from_date": ""
+							},
+							{
+								"schema": "dbo",
+								"table": "DimDate",
+								"cdc_col": "date",
+								"from_date": ""
+							},
+							{
+								"schema": "dbo",
+								"table": "DimArtist",
+								"cdc_col": "updated_at",
+								"from_date": ""
+							},
+							{
+								"schema": "dbo",
+								"table": "FactStream",
+								"cdc_col": "stream_timestamp",
+								"from_date": ""
+							}
+						]
+					}
+				},
+				"variables": {
+					"current": {
+						"type": "String",
+						"defaultValue": "String"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-01-05T00:18:32Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/ds_spotify_cdc_json')]",
+				"[concat(variables('factoryId'), '/datasets/ds_spotify_sql_source')]",
+				"[concat(variables('factoryId'), '/datasets/ds_spotify_bronze_parquet')]",
+				"[concat(variables('factoryId'), '/linkedServices/lsqldb-spotify-dev')]",
+				"[concat(variables('factoryId'), '/linkedServices/lsadls-spotify')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/incremental_ingestion_arm')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "for_each_table",
+						"type": "ForEach",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@pipeline().parameters.loop_input",
+								"type": "Expression"
+							},
+							"isSequential": true,
+							"activities": [
+								{
+									"name": "last_cdc",
+									"type": "Lookup",
+									"dependsOn": [],
+									"policy": {
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "JsonSource"
+										},
+										"dataset": {
+											"referenceName": "ds_spotify_cdc_json_arm",
+											"type": "DatasetReference",
+											"parameters": {
+												"container": "bronze",
+												"file": "cdc.json",
+												"folder": "@{item().table}_cdc"
+											}
+										},
+										"firstRowOnly": false
+									}
+								},
+								{
+									"name": "current_time",
+									"type": "SetVariable",
+									"dependsOn": [],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "current",
+										"value": {
+											"value": "@utcNow()",
+											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "sql_to_datalake",
+									"type": "Copy",
+									"dependsOn": [
+										{
+											"activity": "last_cdc",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										},
+										{
+											"activity": "current_time",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SqlSource",
+											"sqlReaderQuery": {
+												"value": "SELECT * FROM @{item().schema}.@{item().table} WHERE @{item().cdc_col} > '@{if(empty(item().from_date),activity('last_cdc').output.value[0].cdc,item().from_date)}'",
+												"type": "Expression"
+											},
+											"partitionOption": "None"
+										},
+										"sink": {
+											"type": "ParquetSink"
+										},
+										"enableStaging": false
+									},
+									"inputs": [
+										{
+											"referenceName": "ds_spotify_sql_source_arm",
+											"type": "DatasetReference",
+											"parameters": {
+												"schema": "@{item().schema}",
+												"table": "@{item().table}"
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "ds_spotify_bronze_parquet_arm",
+											"type": "DatasetReference",
+											"parameters": {
+												"container": "bronze",
+												"file": "@concat(item().table,'_',variables('current'))",
+												"folder": "@item().table"
+											}
+										}
+									]
+								},
+								{
+									"name": "if_incremental_data",
+									"type": "IfCondition",
+									"dependsOn": [
+										{
+											"activity": "sql_to_datalake",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"userProperties": [],
+									"typeProperties": {
+										"expression": {
+											"value": "@greater(activity('sql_to_datalake').output.dataRead, 0)",
+											"type": "Expression"
+										},
+										"ifFalseActivities": [
+											{
+												"name": "delete_empty_file",
+												"type": "Delete",
+												"dependsOn": [],
+												"policy": {
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"dataset": {
+														"referenceName": "ds_spotify_bronze_parquet_arm",
+														"type": "DatasetReference",
+														"parameters": {
+															"container": "bronze",
+															"file": "@concat(item().table,'_',variables('current'))",
+															"folder": "@item().table"
+														}
+													},
+													"logStorageSettings": {
+														"linkedServiceName": {
+															"referenceName": "lsadls-spotify",
+															"type": "LinkedServiceReference"
+														},
+														"path": ""
+													},
+													"enableLogging": true
+												}
+											}
+										],
+										"ifTrueActivities": [
+											{
+												"name": "max_cdc",
+												"type": "Script",
+												"dependsOn": [],
+												"policy": {
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"linkedServiceName": {
+													"referenceName": "lsqldb-spotify-dev",
+													"type": "LinkedServiceReference"
+												},
+												"typeProperties": {
+													"scripts": [
+														{
+															"type": "Query",
+															"text": {
+																"value": "SELECT MAX(@{item().cdc_col}) as cdc FROM @{item().schema}.@{item().table}",
+																"type": "Expression"
+															}
+														}
+													]
+												}
+											},
+											{
+												"name": "update_last_cdc",
+												"type": "Copy",
+												"dependsOn": [
+													{
+														"activity": "max_cdc",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "JsonSource",
+														"additionalColumns": [
+															{
+																"name": "cdc",
+																"value": {
+																	"value": "@activity('max_cdc').output.resultSets[0].rows[0].cdc",
+																	"type": "Expression"
+																}
+															}
+														]
+													},
+													"sink": {
+														"type": "JsonSink"
+													},
+													"enableStaging": false
+												},
+												"inputs": [
+													{
+														"referenceName": "ds_spotify_cdc_json_arm",
+														"type": "DatasetReference",
+														"parameters": {
+															"container": "bronze",
+															"file": "empty.json",
+															"folder": "@{item().table}_cdc"
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "ds_spotify_cdc_json_arm",
+														"type": "DatasetReference",
+														"parameters": {
+															"container": "bronze",
+															"file": "cdc.json",
+															"folder": "@{item().table}_cdc"
+														}
+													}
+												]
+											}
+										]
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "alerts",
+						"type": "WebActivity",
+						"dependsOn": [
+							{
+								"activity": "for_each_table",
+								"dependencyConditions": [
+									"Failed",
+									"Skipped",
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"method": "POST",
+							"headers": {
+								"Content-Type": "application/json"
+							},
+							"url": "https://prod-28.eastus2.logic.azure.com:443/workflows/4c3115014a194cc0a96925a5c3ce8ff5/triggers/when_http_request_received/paths/invoke?api-version=2019-05-01&sp=%2Ftriggers%2Fwhen_http_request_received%2Frun&sv=1.0&sig=GNdhBhD05xxmbVGwgD1pNHF2muMBIqgmwhrP3AlrI-Q",
+							"body": {
+								"value": "{\"pipeline_name\":\"@{pipeline().Pipeline}\",\"pipeline_runId\":\"@{pipeline().RunId}\"}",
+								"type": "Expression"
+							}
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"loop_input": {
+						"type": "Array",
+						"defaultValue": [
+							{
+								"cdc_col": "updated_at",
+								"from_date": "",
+								"schema": "dbo",
+								"table": "DimUser"
+							},
+							{
+								"cdc_col": "updated_at",
+								"from_date": "",
+								"schema": "dbo",
+								"table": "DimTrack"
+							},
+							{
+								"cdc_col": "date",
+								"from_date": "",
+								"schema": "dbo",
+								"table": "DimDate"
+							},
+							{
+								"cdc_col": "updated_at",
+								"from_date": "",
+								"schema": "dbo",
+								"table": "DimArtist"
+							},
+							{
+								"cdc_col": "stream_timestamp",
+								"from_date": "",
+								"schema": "dbo",
+								"table": "FactStream"
+							}
+						]
+					}
+				},
+				"variables": {
+					"current": {
+						"type": "String"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-01-05T11:33:45Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/ds_spotify_cdc_json_arm')]",
+				"[concat(variables('factoryId'), '/datasets/ds_spotify_sql_source_arm')]",
+				"[concat(variables('factoryId'), '/datasets/ds_spotify_bronze_parquet_arm')]",
+				"[concat(variables('factoryId'), '/linkedServices/lsqldb-spotify-dev')]",
+				"[concat(variables('factoryId'), '/linkedServices/lsadls-spotify')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/ds_spotify_bronze_json')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "lsadls-spotify",
+					"type": "LinkedServiceReference"
+				},
+				"parameters": {
+					"container": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"file": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"folder": {
+						"type": "String",
+						"defaultValue": "String"
+					}
+				},
+				"annotations": [],
+				"type": "Json",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobStorageLocation",
+						"fileName": {
+							"value": "@{dataset().file}",
+							"type": "Expression"
+						},
+						"folderPath": {
+							"value": "@{dataset().folder}",
+							"type": "Expression"
+						},
+						"container": {
+							"value": "@{dataset().container}",
+							"type": "Expression"
+						}
+					},
+					"encodingName": "UTF-8"
+				},
+				"schema": {}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/lsadls-spotify')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/ds_spotify_bronze_parquet')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "lsadls-spotify",
+					"type": "LinkedServiceReference"
+				},
+				"parameters": {
+					"container": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"file": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"folder": {
+						"type": "String",
+						"defaultValue": "String"
+					}
+				},
+				"annotations": [],
+				"type": "Parquet",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"fileName": {
+							"value": "@{dataset().file}",
+							"type": "Expression"
+						},
+						"folderPath": {
+							"value": "@{dataset().folder}",
+							"type": "Expression"
+						},
+						"fileSystem": {
+							"value": "@{dataset().container}",
+							"type": "Expression"
+						}
+					},
+					"compressionCodec": "snappy"
+				},
+				"schema": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/lsadls-spotify')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/ds_spotify_bronze_parquet_arm')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "lsadls-spotify",
+					"type": "LinkedServiceReference"
+				},
+				"parameters": {
+					"container": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"file": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"folder": {
+						"type": "String",
+						"defaultValue": "String"
+					}
+				},
+				"annotations": [],
+				"type": "Parquet",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"fileName": {
+							"value": "@{dataset().file}",
+							"type": "Expression"
+						},
+						"folderPath": {
+							"value": "@{dataset().folder}",
+							"type": "Expression"
+						},
+						"fileSystem": {
+							"value": "@{dataset().container}",
+							"type": "Expression"
+						}
+					},
+					"compressionCodec": "snappy"
+				},
+				"schema": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/lsadls-spotify')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/ds_spotify_cdc_json')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "lsadls-spotify",
+					"type": "LinkedServiceReference"
+				},
+				"parameters": {
+					"container": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"file": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"folder": {
+						"type": "String",
+						"defaultValue": "String"
+					}
+				},
+				"annotations": [],
+				"type": "Json",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobStorageLocation",
+						"fileName": {
+							"value": "@{dataset().file}",
+							"type": "Expression"
+						},
+						"folderPath": {
+							"value": "@{dataset().folder}",
+							"type": "Expression"
+						},
+						"container": {
+							"value": "@{dataset().container}",
+							"type": "Expression"
+						}
+					},
+					"encodingName": "UTF-8"
+				},
+				"schema": {}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/lsadls-spotify')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/ds_spotify_cdc_json_arm')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "lsadls-spotify",
+					"type": "LinkedServiceReference"
+				},
+				"parameters": {
+					"container": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"file": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"folder": {
+						"type": "String",
+						"defaultValue": "String"
+					}
+				},
+				"annotations": [],
+				"type": "Json",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobStorageLocation",
+						"fileName": {
+							"value": "@{dataset().file}",
+							"type": "Expression"
+						},
+						"folderPath": {
+							"value": "@{dataset().folder}",
+							"type": "Expression"
+						},
+						"container": {
+							"value": "@{dataset().container}",
+							"type": "Expression"
+						}
+					},
+					"encodingName": "UTF-8"
+				},
+				"schema": {}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/lsadls-spotify')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/ds_spotify_sql_source')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "lsqldb-spotify-dev",
+					"type": "LinkedServiceReference"
+				},
+				"parameters": {
+					"schema": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"table": {
+						"type": "String",
+						"defaultValue": "String"
+					}
+				},
+				"annotations": [],
+				"type": "AzureSqlTable",
+				"typeProperties": {
+					"schema": {
+						"value": "@{dataset().schema}",
+						"type": "Expression"
+					},
+					"table": {
+						"value": "@{dataset().table}",
+						"type": "Expression"
+					}
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/lsqldb-spotify-dev')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/ds_spotify_sql_source_arm')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "lsqldb-spotify-dev",
+					"type": "LinkedServiceReference"
+				},
+				"parameters": {
+					"schema": {
+						"type": "String",
+						"defaultValue": "String"
+					},
+					"table": {
+						"type": "String",
+						"defaultValue": "String"
+					}
+				},
+				"annotations": [],
+				"type": "AzureSqlTable",
+				"typeProperties": {
+					"schema": {
+						"value": "@{dataset().schema}",
+						"type": "Expression"
+					},
+					"table": {
+						"value": "@{dataset().table}",
+						"type": "Expression"
+					}
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/lsqldb-spotify-dev')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/lsadls-spotify')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Linked services for Azure SQL Database and ADLS Gen2",
+				"annotations": [],
+				"type": "AzureBlobFS",
+				"typeProperties": {
+					"url": "[parameters('lsadls-spotify_properties_typeProperties_url')]",
+					"accountKey": {
+						"type": "SecureString",
+						"value": "[parameters('lsadls-spotify_accountKey')]"
+					}
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/lsqldb-spotify-dev')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Linked services for Azure SQL Database and ADLS Gen2",
+				"annotations": [],
+				"type": "AzureSqlDatabase",
+				"typeProperties": {
+					"connectionString": "[parameters('lsqldb-spotify-dev_connectionString')]"
+				}
+			},
+			"dependsOn": []
+		}
+	]
+}
