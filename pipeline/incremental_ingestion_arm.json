@@ -260,38 +260,6 @@
 						}
 					]
 				}
-			},
-			{
-				"name": "alerts",
-				"type": "WebActivity",
-				"dependsOn": [
-					{
-						"activity": "for_each_table",
-						"dependencyConditions": [
-							"Failed",
-							"Skipped",
-							"Succeeded"
-						]
-					}
-				],
-				"policy": {
-					"retry": 0,
-					"retryIntervalInSeconds": 30,
-					"secureOutput": false,
-					"secureInput": false
-				},
-				"userProperties": [],
-				"typeProperties": {
-					"method": "POST",
-					"headers": {
-						"Content-Type": "application/json"
-					},
-					"url": "https://prod-28.eastus2.logic.azure.com:443/workflows/4c3115014a194cc0a96925a5c3ce8ff5/triggers/when_http_request_received/paths/invoke?api-version=2019-05-01&sp=%2Ftriggers%2Fwhen_http_request_received%2Frun&sv=1.0&sig=GNdhBhD05xxmbVGwgD1pNHF2muMBIqgmwhrP3AlrI-Q",
-					"body": {
-						"value": "{\"pipeline_name\":\"@{pipeline().Pipeline}\",\"pipeline_runId\":\"@{pipeline().RunId}\"}",
-						"type": "Expression"
-					}
-				}
 			}
 		],
 		"parameters": {
@@ -337,7 +305,7 @@
 			}
 		},
 		"annotations": [],
-		"lastPublishTime": "2026-01-05T11:33:45Z"
+		"lastPublishTime": "2026-01-05T16:19:24Z"
 	},
 	"type": "Microsoft.DataFactory/factories/pipelines"
 }
