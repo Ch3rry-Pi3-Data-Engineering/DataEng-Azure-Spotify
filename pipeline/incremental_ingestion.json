@@ -3,122 +3,269 @@
 	"properties": {
 		"activities": [
 			{
-				"name": "last_cdc",
-				"type": "Lookup",
+				"name": "for_each_table",
+				"type": "ForEach",
 				"dependsOn": [],
-				"policy": {
-					"retry": 0,
-					"retryIntervalInSeconds": 30,
-					"secureOutput": false,
-					"secureInput": false
-				},
 				"userProperties": [],
 				"typeProperties": {
-					"source": {
-						"type": "JsonSource"
-					},
-					"dataset": {
-						"referenceName": "ds_spotify_cdc_json",
-						"type": "DatasetReference",
-						"parameters": {
-							"container": "bronze",
-							"file": "cdc.json",
-							"folder": "cdc"
-						}
-					},
-					"firstRowOnly": false
-				}
-			},
-			{
-				"name": "current_time",
-				"type": "SetVariable",
-				"dependsOn": [],
-				"policy": {
-					"secureOutput": false,
-					"secureInput": false
-				},
-				"userProperties": [],
-				"typeProperties": {
-					"variableName": "current",
-					"value": {
-						"value": "@utcNow()",
+					"items": {
+						"value": "@pipeline().parameters.loop_input",
 						"type": "Expression"
-					}
-				}
-			},
-			{
-				"name": "sql_to_datalake",
-				"type": "Copy",
-				"dependsOn": [
-					{
-						"activity": "last_cdc",
-						"dependencyConditions": [
-							"Succeeded"
-						]
 					},
-					{
-						"activity": "current_time",
-						"dependencyConditions": [
-							"Succeeded"
-						]
-					}
-				],
-				"policy": {
-					"retry": 0,
-					"retryIntervalInSeconds": 30,
-					"secureOutput": false,
-					"secureInput": false
-				},
-				"userProperties": [],
-				"typeProperties": {
-					"source": {
-						"type": "SqlSource",
-						"sqlReaderQuery": {
-							"value": "SELECT * FROM @{pipeline().parameters.schema}.@{pipeline().parameters.table} WHERE @{pipeline().parameters.cdc_col} > '@{activity('last_cdc').output.value[0].cdc}'",
-							"type": "Expression"
+					"isSequential": true,
+					"activities": [
+						{
+							"name": "last_cdc",
+							"type": "Lookup",
+							"dependsOn": [],
+							"policy": {
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "JsonSource"
+								},
+								"dataset": {
+									"referenceName": "ds_spotify_cdc_json",
+									"type": "DatasetReference",
+									"parameters": {
+										"container": "bronze",
+										"file": "cdc.json",
+										"folder": "@{item().table}_cdc"
+									}
+								},
+								"firstRowOnly": false
+							}
 						},
-						"partitionOption": "None"
-					},
-					"sink": {
-						"type": "ParquetSink"
-					},
-					"enableStaging": false
-				},
-				"inputs": [
-					{
-						"referenceName": "ds_spotify_sql_source",
-						"type": "DatasetReference",
-						"parameters": {
-							"schema": "@{pipeline().parameters.schema}",
-							"table": "@{pipeline().parameters.table}"
+						{
+							"name": "current_time",
+							"type": "SetVariable",
+							"dependsOn": [],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "current",
+								"value": {
+									"value": "@utcNow()",
+									"type": "Expression"
+								}
+							}
+						},
+						{
+							"name": "sql_to_datalake",
+							"type": "Copy",
+							"dependsOn": [
+								{
+									"activity": "last_cdc",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								},
+								{
+									"activity": "current_time",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "SqlSource",
+									"sqlReaderQuery": {
+										"value": "SELECT * FROM @{item().schema}.@{item().table} WHERE @{item().cdc_col} > '@{if(empty(item().from_date),activity('last_cdc').output.value[0].cdc,item().from_date)}'",
+										"type": "Expression"
+									},
+									"partitionOption": "None"
+								},
+								"sink": {
+									"type": "ParquetSink"
+								},
+								"enableStaging": false
+							},
+							"inputs": [
+								{
+									"referenceName": "ds_spotify_sql_source",
+									"type": "DatasetReference",
+									"parameters": {
+										"schema": "@{item().schema}",
+										"table": "@{item().table}"
+									}
+								}
+							],
+							"outputs": [
+								{
+									"referenceName": "ds_spotify_bronze_parquet",
+									"type": "DatasetReference",
+									"parameters": {
+										"container": "bronze",
+										"file": "@concat(item().table,'_',variables('current'))",
+										"folder": "@item().table"
+									}
+								}
+							]
+						},
+						{
+							"name": "if_incremental_data",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "sql_to_datalake",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@greater(activity('sql_to_datalake').output.dataRead, 0)",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "delete_empty_file",
+										"type": "Delete",
+										"dependsOn": [],
+										"policy": {
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"dataset": {
+												"referenceName": "ds_spotify_bronze_parquet",
+												"type": "DatasetReference",
+												"parameters": {
+													"container": "bronze",
+													"file": "@concat(item().table,'_',variables('current'))",
+													"folder": "@item().table"
+												}
+											},
+											"logStorageSettings": {
+												"linkedServiceName": {
+													"referenceName": "lsadls-spotify",
+													"type": "LinkedServiceReference"
+												},
+												"path": ""
+											},
+											"enableLogging": true
+										}
+									}
+								],
+								"ifTrueActivities": [
+									{
+										"name": "max_cdc",
+										"type": "Script",
+										"dependsOn": [],
+										"policy": {
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"linkedServiceName": {
+											"referenceName": "lsqldb-spotify-dev",
+											"type": "LinkedServiceReference"
+										},
+										"typeProperties": {
+											"scripts": [
+												{
+													"type": "Query",
+													"text": {
+														"value": "SELECT MAX(@{item().cdc_col}) as cdc FROM @{item().schema}.@{item().table}",
+														"type": "Expression"
+													}
+												}
+											]
+										}
+									},
+									{
+										"name": "update_last_cdc",
+										"type": "Copy",
+										"dependsOn": [
+											{
+												"activity": "max_cdc",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"source": {
+												"type": "JsonSource",
+												"additionalColumns": [
+													{
+														"name": "cdc",
+														"value": {
+															"value": "@activity('max_cdc').output.resultSets[0].rows[0].cdc",
+															"type": "Expression"
+														}
+													}
+												]
+											},
+											"sink": {
+												"type": "JsonSink"
+											},
+											"enableStaging": false
+										},
+										"inputs": [
+											{
+												"referenceName": "ds_spotify_cdc_json",
+												"type": "DatasetReference",
+												"parameters": {
+													"container": "bronze",
+													"file": "empty.json",
+													"folder": "@{item().table}_cdc"
+												}
+											}
+										],
+										"outputs": [
+											{
+												"referenceName": "ds_spotify_cdc_json",
+												"type": "DatasetReference",
+												"parameters": {
+													"container": "bronze",
+													"file": "cdc.json",
+													"folder": "@{item().table}_cdc"
+												}
+											}
+										]
+									}
+								]
+							}
 						}
-					}
-				],
-				"outputs": [
-					{
-						"referenceName": "ds_spotify_bronze_parquet",
-						"type": "DatasetReference",
-						"parameters": {
-							"container": "bronze",
-							"file": "@{concat(pipeline().parameters.table,'_',variables('current'))}.parquet",
-							"folder": "Users"
-						}
-					}
-				]
+					]
+				}
 			}
 		],
 		"parameters": {
-			"cdc_col": {
+			"loop_input": {
 				"type": "String",
-				"defaultValue": "String"
-			},
-			"schema": {
-				"type": "String",
-				"defaultValue": "String"
-			},
-			"table": {
-				"type": "String",
-				"defaultValue": "String"
+				"defaultValue": "Array"
 			}
 		},
 		"variables": {
@@ -128,7 +275,7 @@
 			}
 		},
 		"annotations": [],
-		"lastPublishTime": "2026-01-04T19:48:11Z"
+		"lastPublishTime": "2026-01-05T00:18:32Z"
 	},
 	"type": "Microsoft.DataFactory/factories/pipelines"
 }
