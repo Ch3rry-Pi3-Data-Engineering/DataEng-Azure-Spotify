@@ -269,7 +269,8 @@
 						"activity": "for_each_table",
 						"dependencyConditions": [
 							"Failed",
-							"Skipped"
+							"Skipped",
+							"Succeeded"
 						]
 					}
 				],
