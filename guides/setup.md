@@ -153,6 +153,36 @@ Terraform creates ADF resources (linked services, datasets, pipelines) in Live m
 
 Note: `adf_publish` is an auto-generated branch created by ADF when you publish. It is not meant to be merged into `main` and will be recreated if deleted.
 
+## Incremental Ingestion Pipeline
+The `incremental_ingestion` pipeline is created by Terraform and expects a single parameter:
+- `loop_input` (Array). Paste the JSON array into the default value; each item must include `schema`, `table`, `cdc_col`, and `from_date`.
+  - `from_date` is optional; when empty, the pipeline uses the CDC lookup file for that table.
+  - Use a SQL-friendly format, e.g. `2026-01-04` or `2026-01-04T22:02:03.6147312` (no trailing `Z`).
+
+The pipeline flow is:
+1) For each item in `loop_input`, lookup `bronze/<table>_cdc/cdc.json` (JSON array) to get the last CDC value.
+2) Set variable `current` to `@utcNow()` for file naming.
+3) Copy SQL data to Parquet in `bronze/<table>/<table>_<current>`.
+4) If data was read, query max CDC and overwrite `bronze/<table>_cdc/cdc.json`. If no rows, delete the empty Parquet file.
+
+The delete activity requires logging settings with the ADLS linked service (configured in Terraform).
+
+Default loop input lives in `data_scripts/loop_input.json`. Paste it into the pipeline parameter default value, or override it for a smaller debug run:
+```
+[
+  {
+    "schema": "dbo",
+    "table": "DimUser",
+    "cdc_col": "updated_at",
+    "from_date": "2025-01-01"
+  }
+]
+```
+
+Test runs:
+- With `from_date` set, the pipeline uses that value for the CDC filter.
+- With `from_date` empty, the pipeline uses the last CDC value from the lookup file.
+
 ## Seed the SQL Database
 To run `data_scripts/spotify_initial_load.sql` against the new database:
 ```powershell
@@ -212,7 +242,7 @@ python scripts\destroy.py --adf-pipeline-only
 - Storage account names must be 3-24 characters and lowercase letters/numbers.
 - The storage account is created with hierarchical namespace enabled (ADLS Gen2).
 - The deploy script creates bronze, silver, and gold containers for the medallion architecture.
-- The storage module uploads data_scripts/cdc.json and data_scripts/empty.json into bronze/cdc.
+- The storage module uploads data_scripts/cdc.json and data_scripts/empty.json into bronze/<table>_cdc for each table in data_scripts/loop_input.json (or loop_input.txt), plus bronze/FactStream.
 - Storage replication defaults to LRS (locally redundant storage).
 - SQL admin credentials are read from env vars, or auto-generated and saved to terraform/03_sql_database/terraform.tfvars.
 - The SQL server allows Azure services and the detected or provided client IP address.

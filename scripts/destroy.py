@@ -11,11 +11,11 @@ DEFAULTS = {
     "adf_sql_dataset_name": "ds_spotify_sql_source",
     "adf_sink_dataset_name": "ds_spotify_bronze_parquet",
     "adf_lookup_container": "bronze",
-    "adf_lookup_folder": "cdc",
+    "adf_lookup_folder": "@{item().table}_cdc",
     "adf_lookup_file": "cdc.json",
     "adf_sink_container": "bronze",
-    "adf_sink_folder": "Users",
-    "adf_sink_file": "@{concat(pipeline().parameters.table,'_',variables('current'))}.parquet",
+    "adf_sink_folder": "@item().table",
+    "adf_sink_file": "@concat(item().table,'_',variables('current'))",
 }
 
 def run(cmd):

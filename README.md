@@ -88,9 +88,11 @@ Linked services for SQL and ADLS Gen2 are created via Terraform in `terraform/05
 
 ## ADF Incremental Pipeline
 Datasets and the incremental ingestion pipeline are created via Terraform in `terraform/06_adf_pipeline_incremental`.
+The pipeline reads per-table CDC JSON files, ingests to Parquet, and updates the CDC markers when new rows are present.
+Default loop input lives in `data_scripts/loop_input.json`. Set the pipeline `loop_input` parameter type to Array and paste this JSON into the default value in ADF Studio (the Terraform provider does not set default values).
 
 ## ADLS Seed Files
-The storage module uploads `data_scripts/cdc.json` and `data_scripts/empty.json` into `bronze/cdc`.
+The storage module uploads `data_scripts/cdc.json` and `data_scripts/empty.json` into `bronze/<table>_cdc` for each table in the loop input file, plus `bronze/FactStream`.
 
 Destroy:
 ```powershell

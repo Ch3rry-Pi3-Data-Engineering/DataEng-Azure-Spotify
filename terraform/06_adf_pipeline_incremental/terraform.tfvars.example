@@ -8,9 +8,9 @@ sql_dataset_name = "ds_spotify_sql_source"
 sink_dataset_name = "ds_spotify_bronze_parquet"
 
 lookup_container = "bronze"
-lookup_folder = "cdc"
+lookup_folder = "@{item().table}_cdc"
 lookup_file = "cdc.json"
 
 sink_container = "bronze"
-sink_folder = "Users"
-sink_file = "@{concat(pipeline().parameters.table,'_',variables('current'))}.parquet"
+sink_folder = "@item().table"
+sink_file = "@concat(item().table,'_',variables('current'))"

@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import secrets
 import shutil
@@ -31,11 +32,11 @@ DEFAULTS = {
     "adf_sql_dataset_name": "ds_spotify_sql_source",
     "adf_sink_dataset_name": "ds_spotify_bronze_parquet",
     "adf_lookup_container": "bronze",
-    "adf_lookup_folder": "cdc",
+    "adf_lookup_folder": "@{item().table}_cdc",
     "adf_lookup_file": "cdc.json",
     "adf_sink_container": "bronze",
-    "adf_sink_folder": "Users",
-    "adf_sink_file": "@{concat(pipeline().parameters.table,'_',variables('current'))}.parquet",
+    "adf_sink_folder": "@item().table",
+    "adf_sink_file": "@concat(item().table,'_',variables('current'))",
 }
 
 SQLCMD_FALLBACK_PATHS = [
@@ -43,6 +44,17 @@ SQLCMD_FALLBACK_PATHS = [
     r"C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\sqlcmd.exe",
     r"C:\Program Files (x86)\Microsoft SQL Server\Client SDK\ODBC\180\Tools\Binn\sqlcmd.exe",
     r"C:\Program Files (x86)\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\sqlcmd.exe",
+]
+
+DEFAULT_CDC_FOLDERS = [
+    "DimArtist_cdc",
+    "DimDate_cdc",
+    "DimTrack_cdc",
+    "DimUser_cdc",
+    "FactStream_cdc",
+]
+EXTRA_SEED_FOLDERS = [
+    "FactStream",
 ]
 
 def run(cmd):
@@ -376,14 +388,22 @@ def run_sql_script(sql_dir, admin_login, admin_password, script_path):
     run_sensitive(cmd, redacted_indices=[password_index])
 
 def ensure_storage_seed_blobs(storage_dir):
+    repo_root = storage_dir.parent.parent
+    cdc_folders = get_cdc_folders(repo_root)
     account_name = get_output_optional(storage_dir, "storage_account_name")
     if not account_name:
         return
     state = get_state_addresses(storage_dir)
-    imports = {
-        "azurerm_storage_blob.cdc_json": f"https://{account_name}.blob.core.windows.net/bronze/cdc/cdc.json",
-        "azurerm_storage_blob.cdc_empty_json": f"https://{account_name}.blob.core.windows.net/bronze/cdc/empty.json",
-    }
+    imports = {}
+    for folder in cdc_folders:
+        seed_key = f"{folder}/cdc.json"
+        empty_key = f"{folder}/empty.json"
+        imports[f'azurerm_storage_blob.cdc_seed["{seed_key}"]'] = (
+            f"https://{account_name}.blob.core.windows.net/bronze/{seed_key}"
+        )
+        imports[f'azurerm_storage_blob.cdc_empty["{empty_key}"]'] = (
+            f"https://{account_name}.blob.core.windows.net/bronze/{empty_key}"
+        )
     for address, resource_id in imports.items():
         if address in state:
             continue
@@ -392,6 +412,31 @@ def ensure_storage_seed_blobs(storage_dir):
         )
         if result.returncode != 0:
             print(f"Skipping import for {address}. It may not exist yet.")
+
+def get_cdc_folders(repo_root):
+    loop_input_paths = [
+        repo_root / "data_scripts" / "loop_input.json",
+        repo_root / "data_scripts" / "loop_input.txt",
+    ]
+    data = None
+    for path in loop_input_paths:
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                break
+            except json.JSONDecodeError:
+                data = None
+    folders = set()
+    if isinstance(data, list):
+        folders.update(
+            f"{entry.get('table')}_cdc"
+            for entry in data
+            if isinstance(entry, dict) and entry.get("table")
+        )
+    if not folders:
+        folders.update(DEFAULT_CDC_FOLDERS)
+    folders.update(EXTRA_SEED_FOLDERS)
+    return sorted(folders)
 
 if __name__ == "__main__":
     try:

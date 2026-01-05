@@ -46,7 +46,7 @@ variable "lookup_container" {
 variable "lookup_folder" {
   type        = string
   description = "ADLS folder for the CDC lookup file"
-  default     = "cdc"
+  default     = "@{item().table}_cdc"
 }
 
 variable "lookup_file" {
@@ -64,11 +64,11 @@ variable "sink_container" {
 variable "sink_folder" {
   type        = string
   description = "ADLS folder for the sink dataset"
-  default     = "Users"
+  default     = "@item().table"
 }
 
 variable "sink_file" {
   type        = string
   description = "Sink file name"
-  default     = "@{concat(pipeline().parameters.table,'_',variables('current'))}.parquet"
+  default     = "@concat(item().table,'_',variables('current'))"
 }
