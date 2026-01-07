@@ -2,6 +2,23 @@
 
 Terraform-first infrastructure for a Spotify data engineering project using the medallion architecture (bronze/silver/gold).
 
+```mermaid
+flowchart LR
+    B["Bronze container 
+    (Raw ingestion)"] --> S["Silver container 
+    (Cleaned / Conformed)"]
+    S --> G["Gold container 
+    (Business-ready)"]
+
+    classDef bronze fill:#cd7f32,stroke:#8c5a1a,color:#000;
+    classDef silver fill:#c0c0c0,stroke:#7f7f7f,color:#000;
+    classDef gold fill:#d4af37,stroke:#8b6f1a,color:#000;
+
+    class B bronze;
+    class S silver;
+    class G gold;
+```
+
 ## Quick Start
 1) Install prerequisites:
    - Azure CLI (az)
@@ -39,21 +56,21 @@ If you run Terraform manually instead of the script, set `TF_VAR_databricks_acco
 To push workspace content with `scripts/push_databricks_workspace.py`, install the Databricks CLI. The script loads `.env`, detects the workspace host, and uses OAuth M2M when the Databricks client ID/secret are set, so you do not need an interactive login.
 
 ## Project Structure
-- terraform/01_resource_group: Azure resource group
-- terraform/02_storage_account: ADLS Gen2 storage account + medallion containers
-- terraform/03_sql_database: Azure SQL Server + dev database
-- terraform/04_data_factory: Azure Data Factory v2
-- terraform/05_adf_linked_services: ADF linked services (SQL + ADLS Gen2)
-- terraform/06_adf_pipeline_incremental_arm: ADF datasets + incremental ingestion pipeline (ARM/azapi)
-- terraform/07_monitoring: Azure Monitor alerts (Log Analytics + Action Group email)
-- terraform/08_databricks: Azure Databricks workspace (Premium)
-- terraform/09_databricks_access_connector: Databricks access connector + Storage Blob Data Contributor role
-- terraform/10_databricks_uc: Unity Catalog catalog/schema + storage credential + external locations
-- spotify_dab/src/silver: Example silver notebooks included in the DBC
-- spotify_dab/src/gold: Gold pipeline code (DLT transformations)
-- scripts/: Deploy/destroy helpers (auto-writes terraform.tfvars)
-- guides/setup.md: Detailed setup guide
-- data_scripts/: SQL/scripts for data loading
+- `terraform/01_resource_group`: Azure resource group
+- `terraform/02_storage_account`: ADLS Gen2 storage account + medallion containers
+- `terraform/03_sql_database`: Azure SQL Server + dev database
+- `terraform/04_data_factory`: Azure Data Factory v2
+- `terraform/05_adf_linked_services`: ADF linked services (SQL + ADLS Gen2)
+- `terraform/06_adf_pipeline_incremental_arm`: ADF datasets + incremental ingestion pipeline (ARM/azapi)
+- `terraform/07_monitoring`: Azure Monitor alerts (Log Analytics + Action Group email)
+- `terraform/08_databricks`: Azure Databricks workspace (Premium)
+- `terraform/09_databricks_access_connector`: Databricks access connector + Storage Blob Data Contributor role
+- `terraform/10_databricks_uc`: Unity Catalog catalog/schema + storage credential + external locations
+- `spotify_dab/src/silver`: Example silver notebooks included in the DBC
+- `spotify_dab/src/gold`: Gold pipeline code (DLT transformations)
+- `scripts/`: Deploy/destroy helpers (auto-writes terraform.tfvars)
+- `guides/setup.md`: Detailed setup guide
+- `data_scripts/`: SQL/scripts for data loading
 
 ## Deploy/Destroy Options
 Deploy specific stacks:

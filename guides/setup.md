@@ -2,6 +2,24 @@
 
 This project provisions Azure resources using Terraform and includes helper scripts.
 
+```mermaid
+flowchart LR
+    B["Bronze container 
+    (Raw ingestion)"] --> S["Silver container 
+    (Cleaned / Conformed)"]
+    S --> G["Gold container 
+    (Business-ready)"]
+
+    classDef bronze fill:#cd7f32,stroke:#8c5a1a,color:#000;
+    classDef silver fill:#c0c0c0,stroke:#7f7f7f,color:#000;
+    classDef gold fill:#d4af37,stroke:#8b6f1a,color:#000;
+
+    class B bronze;
+    class S silver;
+    class G gold;
+    
+```
+
 ## Prerequisites
 - Azure CLI (az) installed and authenticated
 - Terraform installed (>= 1.5)
@@ -44,19 +62,19 @@ choco install terraform -y
 After installing, re-open PowerShell and re-run terraform version.
 
 ## Project Structure
-- terraform/01_resource_group: Azure resource group
-- terraform/02_storage_account: ADLS Gen2 storage account + medallion containers
-- terraform/03_sql_database: Azure SQL Server + dev database
-- terraform/04_data_factory: Azure Data Factory v2
-- terraform/05_adf_linked_services: ADF linked services (SQL + ADLS Gen2)
-- terraform/06_adf_pipeline_incremental_arm: ADF datasets + incremental ingestion pipeline (ARM/azapi)
-- terraform/07_monitoring: Azure Monitor alerts (Log Analytics + Action Group email)
-- terraform/08_databricks: Azure Databricks workspace (Premium)
-- terraform/09_databricks_access_connector: Databricks access connector + Storage Blob Data Contributor role
-- terraform/10_databricks_uc: Unity Catalog catalog/schema + storage credential + external locations
-- spotify_dab/src/silver: Example silver notebooks included in the DBC
-- spotify_dab/src/gold: Gold pipeline code (DLT transformations)
-- scripts/: Helper scripts to deploy/destroy Terraform resources
+- `terraform/01_resource_group`: Azure resource group
+- `terraform/02_storage_account`: ADLS Gen2 storage account + medallion containers
+- `terraform/03_sql_database`: Azure SQL Server + dev database
+- `terraform/04_data_factory`: Azure Data Factory v2
+- `terraform/05_adf_linked_services`: ADF linked services (SQL + ADLS Gen2)
+- `terraform/06_adf_pipeline_incremental_arm`: ADF datasets + incremental ingestion pipeline (ARM/azapi)
+- `terraform/07_monitoring`: Azure Monitor alerts (Log Analytics + Action Group email)
+- `terraform/08_databricks`: Azure Databricks workspace (Premium)
+- `terraform/09_databricks_access_connector`: Databricks access connector + Storage Blob Data Contributor role
+- `terraform/10_databricks_uc`: Unity Catalog catalog/schema + storage credential + external locations
+- `spotify_dab/src/silver`: Example silver notebooks included in the DBC
+- `spotify_dab/src/gold`: Gold pipeline code (DLT transformations)
+- `scripts/`: Helper scripts to deploy/destroy Terraform resources
 
 ## Configure Terraform
 The deploy script writes terraform.tfvars files automatically.
@@ -193,6 +211,14 @@ python scripts\deploy.py --db-import-only --databricks-profile spotify
 ```
 
 Full deploys also import `databricks_workspace/spotify_dab.dbc` into `/Users/<user-email>/spotify_dab` (and replace it) unless you pass `--skip-dbc-import`. When `--databricks-profile` is set, the deploy script runs `databricks auth login` against the current workspace host before importing.
+
+## Databricks Compute (Notebook Runs)
+Use a compute cluster (not serverless) to run the notebooks. Recommended baseline:
+- Runtime: Databricks Runtime 14.3 LTS
+- Cluster type: Standard (All-purpose)
+- Photon acceleration: Enabled
+
+Photon improves performance for the Spark SQL and streaming steps in this project, and a standard cluster is required for explicit checkpointing and Auto Loader rescue mode workflows used in the silver/gold notebooks.
 
 ## Building the spotify_dab DBC (Manual)
 Export the DBC from the workspace project root (avoid the `.bundle` folder to keep paths clean):
