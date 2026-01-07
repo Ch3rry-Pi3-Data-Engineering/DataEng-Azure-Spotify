@@ -27,6 +27,8 @@ resource "databricks_catalog" "main" {
   name    = var.catalog_name
   comment = "Spotify data catalog"
   storage_root = local.catalog_storage_root
+
+  depends_on = [databricks_external_location.silver]
 }
 
 resource "databricks_storage_credential" "managed_identity" {
@@ -42,6 +44,7 @@ resource "databricks_external_location" "bronze" {
   url             = local.bronze_url
   credential_name = databricks_storage_credential.managed_identity.name
   comment         = "Bronze medallion data"
+  force_destroy   = true
 }
 
 resource "databricks_external_location" "silver" {
@@ -49,6 +52,7 @@ resource "databricks_external_location" "silver" {
   url             = local.silver_url
   credential_name = databricks_storage_credential.managed_identity.name
   comment         = "Silver medallion data"
+  force_destroy   = true
 }
 
 resource "databricks_external_location" "gold" {
@@ -56,6 +60,7 @@ resource "databricks_external_location" "gold" {
   url             = local.gold_url
   credential_name = databricks_storage_credential.managed_identity.name
   comment         = "Gold medallion data"
+  force_destroy   = true
 }
 
 resource "databricks_schema" "silver" {
@@ -63,6 +68,7 @@ resource "databricks_schema" "silver" {
   catalog_name = databricks_catalog.main.name
   storage_root = local.silver_url
   comment      = "Silver schema"
+  force_destroy = true
 
   depends_on = [databricks_external_location.silver]
 }
@@ -72,6 +78,7 @@ resource "databricks_schema" "gold" {
   catalog_name = databricks_catalog.main.name
   storage_root = local.gold_url
   comment      = "Gold schema"
+  force_destroy = true
 
   depends_on = [databricks_external_location.gold]
 }

@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +47,10 @@ def run(cmd):
     print(f"\n$ {' '.join(cmd)}")
     subprocess.check_call(cmd)
 
+def run_optional(cmd):
+    print(f"\n$ {' '.join(cmd)}")
+    return subprocess.run(cmd)
+
 def run_capture(cmd):
     print(f"\n$ {' '.join(cmd)}")
     return subprocess.check_output(cmd, text=True).strip()
@@ -72,6 +77,69 @@ def get_env_required(key):
     if value is None or value == "":
         raise RuntimeError(f"Missing required environment variable: {key}")
     return value
+
+def get_databricks_workspace_user():
+    return (
+        os.environ.get("DATABRICKS_WORKSPACE_USER")
+        or os.environ.get("AZUREAD_ADMIN_LOGIN")
+        or os.environ.get("DATABRICKS_USER")
+        or os.environ.get("DATABRICKS_USERNAME")
+    )
+
+def get_databricks_dbc_target_path():
+    user = get_databricks_workspace_user()
+    if not user:
+        raise RuntimeError(
+            "Set DATABRICKS_WORKSPACE_USER (or AZUREAD_ADMIN_LOGIN) to build the Databricks user path."
+        )
+    return f"/Users/{user}/spotify_dab"
+
+def ensure_databricks_cli():
+    if shutil.which("databricks") is None:
+        raise RuntimeError("Databricks CLI not found. Install it and retry.")
+
+def configure_oauth_env(profile):
+    if profile:
+        return
+    client_id = os.environ.get("DATABRICKS_CLIENT_ID")
+    client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return
+    os.environ.setdefault("DATABRICKS_AUTH_TYPE", "oauth-m2m")
+
+def normalize_databricks_host(value):
+    if not value:
+        return None
+    host = value.strip().rstrip("/")
+    if host.startswith("http://") or host.startswith("https://"):
+        return host
+    return f"https://{host}"
+
+def databricks_cmd(profile, *args):
+    cmd = ["databricks"]
+    if profile:
+        cmd.extend(["--profile", profile])
+    cmd.extend(args)
+    return cmd
+
+def login_databricks_profile(databricks_dir, profile):
+    host = get_output_optional(databricks_dir, "databricks_workspace_url")
+    if not host:
+        raise RuntimeError("Databricks workspace URL not found; cannot login profile.")
+    host = normalize_databricks_host(host)
+    run(["databricks", "auth", "login", "--host", host, "--profile", profile])
+
+def delete_databricks_workspace_path(databricks_dir, path, profile=None):
+    ensure_databricks_cli()
+    host = get_output_optional(databricks_dir, "databricks_workspace_url")
+    if host:
+        os.environ.setdefault("DATABRICKS_HOST", normalize_databricks_host(host))
+    configure_oauth_env(profile)
+    if profile:
+        login_databricks_profile(databricks_dir, profile)
+    result = run_optional(databricks_cmd(profile, "workspace", "delete", "--recursive", path))
+    if result.returncode != 0:
+        print(f"Warning: failed to delete {path}. It may not exist yet.")
 
 def hcl_value(value):
     if value is None:
@@ -141,6 +209,24 @@ def get_output_optional(tf_dir, output_name):
         )
     except subprocess.CalledProcessError:
         return None
+
+def ensure_storage_dimuser_paths(storage_dir):
+    account_name = get_output_optional(storage_dir, "storage_account_name")
+    if not account_name:
+        return
+    dimuser_paths = [
+        "DimUser",
+        "DimUser/data",
+        "DimUser/checkpoint",
+    ]
+    for path in dimuser_paths:
+        address = f'azurerm_storage_data_lake_gen2_path.silver_dimuser_dirs["{path}"]'
+        resource_id = f"https://{account_name}.dfs.core.windows.net/silver/{path}"
+        result = run_optional(
+            ["terraform", f"-chdir={storage_dir}", "import", address, resource_id]
+        )
+        if result.returncode != 0:
+            print(f"Skipping import for {address}. It may not exist yet.")
 
 def get_data_factory_id_from_state(data_factory_dir):
     state_path = data_factory_dir / "terraform.tfstate"
@@ -407,9 +493,18 @@ if __name__ == "__main__":
             help="Destroy only the Databricks access connector stack",
         )
         group.add_argument(
-            "--databricks-uc-only",
+            "--uc-only",
             action="store_true",
             help="Destroy only the Databricks Unity Catalog stack",
+        )
+        group.add_argument(
+            "--db-import-only",
+            action="store_true",
+            help="Destroy only the Databricks DBC workspace import",
+        )
+        parser.add_argument(
+            "--databricks-profile",
+            help="Databricks CLI profile for workspace deletes (DAB).",
         )
         args = parser.parse_args()
 
@@ -425,7 +520,16 @@ if __name__ == "__main__":
         databricks_dir = repo_root / "terraform" / "08_databricks"
         access_connector_dir = repo_root / "terraform" / "09_databricks_access_connector"
         uc_dir = repo_root / "terraform" / "10_databricks_uc"
+        databricks_profile = args.databricks_profile
 
+        if args.db_import_only:
+            dbc_target_path = get_databricks_dbc_target_path()
+            delete_databricks_workspace_path(
+                databricks_dir,
+                dbc_target_path,
+                profile=databricks_profile,
+            )
+            sys.exit(0)
         if args.rg_only:
             tf_dirs = [rg_dir]
         elif args.storage_only:
@@ -458,10 +562,16 @@ if __name__ == "__main__":
         elif args.databricks_access_connector_only:
             prepare_databricks_access_connector_tfvars(access_connector_dir, rg_dir, storage_dir)
             tf_dirs = [access_connector_dir]
-        elif args.databricks_uc_only:
+        elif args.uc_only:
             prepare_databricks_uc_tfvars(uc_dir, databricks_dir, access_connector_dir, storage_dir)
             tf_dirs = [uc_dir]
         else:
+            dbc_target_path = get_databricks_dbc_target_path()
+            delete_databricks_workspace_path(
+                databricks_dir,
+                dbc_target_path,
+                profile=databricks_profile,
+            )
             prepare_adf_pipeline_arm_tfvars(
                 pipeline_arm_dir,
                 data_factory_dir,
@@ -493,6 +603,8 @@ if __name__ == "__main__":
         for tf_dir in tf_dirs:
             if not tf_dir.exists():
                 raise FileNotFoundError(f"Missing Terraform dir: {tf_dir}")
+            if tf_dir == storage_dir:
+                ensure_storage_dimuser_paths(storage_dir)
             run(["terraform", f"-chdir={tf_dir}", "destroy", "-auto-approve"])
     except subprocess.CalledProcessError as exc:
         print(f"Command failed: {exc}")

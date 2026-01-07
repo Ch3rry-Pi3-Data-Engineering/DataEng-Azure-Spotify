@@ -73,9 +73,7 @@ DEFAULT_CDC_FOLDERS = [
     "DimUser_cdc",
     "FactStream_cdc",
 ]
-EXTRA_SEED_FOLDERS = [
-    "FactStream",
-]
+EXTRA_SEED_FOLDERS = []
 
 def run(cmd):
     print(f"\n$ {' '.join(cmd)}")
@@ -96,6 +94,21 @@ def run_sensitive(cmd, redacted_indices):
             display_cmd[index] = "***"
     print(f"\n$ {' '.join(display_cmd)}")
     subprocess.check_call(cmd)
+
+def normalize_databricks_host(value):
+    if not value:
+        return None
+    host = value.strip().rstrip("/")
+    if host.startswith("http://") or host.startswith("https://"):
+        return host
+    return f"https://{host}"
+
+def login_databricks_profile(databricks_dir, profile):
+    host = get_output_optional(databricks_dir, "databricks_workspace_url")
+    if not host:
+        raise RuntimeError("Databricks workspace URL not found; cannot login profile.")
+    host = normalize_databricks_host(host)
+    run(["databricks", "auth", "login", "--host", host, "--profile", profile])
 
 def load_env_file(path):
     if not path.exists():
@@ -150,6 +163,22 @@ def get_env_required(key):
 def get_env_optional(key):
     value = os.environ.get(key)
     return value if value not in (None, "") else None
+
+def get_databricks_workspace_user():
+    return (
+        os.environ.get("DATABRICKS_WORKSPACE_USER")
+        or os.environ.get("AZUREAD_ADMIN_LOGIN")
+        or os.environ.get("DATABRICKS_USER")
+        or os.environ.get("DATABRICKS_USERNAME")
+    )
+
+def get_databricks_dbc_target_path():
+    user = get_databricks_workspace_user()
+    if not user:
+        raise RuntimeError(
+            "Set DATABRICKS_WORKSPACE_USER (or AZUREAD_ADMIN_LOGIN) to build the Databricks user path."
+        )
+    return f"/Users/{user}/spotify_dab"
 
 def read_tfvars_value(path, key):
     if not path.exists():
@@ -486,6 +515,22 @@ def ensure_storage_seed_blobs(storage_dir):
         if result.returncode != 0:
             print(f"Skipping import for {address}. It may not exist yet.")
 
+    dimuser_paths = [
+        "DimUser",
+        "DimUser/data",
+        "DimUser/checkpoint",
+    ]
+    for path in dimuser_paths:
+        address = f'azurerm_storage_data_lake_gen2_path.silver_dimuser_dirs["{path}"]'
+        if address in state:
+            continue
+        resource_id = f"https://{account_name}.dfs.core.windows.net/silver/{path}"
+        result = run_optional(
+            ["terraform", f"-chdir={storage_dir}", "import", address, resource_id]
+        )
+        if result.returncode != 0:
+            print(f"Skipping import for {address}. It may not exist yet.")
+
 def get_cdc_folders(repo_root):
     loop_input_paths = [
         repo_root / "data_scripts" / "loop_input.json",
@@ -511,6 +556,37 @@ def get_cdc_folders(repo_root):
     folders.update(EXTRA_SEED_FOLDERS)
     return sorted(folders)
 
+def import_databricks_dbc(repo_root, target_path, profile=None):
+    dbc_path = repo_root / "databricks_workspace" / "spotify_dab.dbc"
+    if not dbc_path.exists():
+        print("Skipping DBC import (databricks_workspace/spotify_dab.dbc not found).")
+        return
+    script_path = repo_root / "scripts" / "import_databricks_dbc.py"
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--file",
+        str(dbc_path),
+        "--target",
+        target_path,
+        "--replace",
+    ]
+    if profile:
+        cmd.extend(["--profile", profile])
+    run(cmd)
+
+def push_databricks_workspace(repo_root, workspace_dir, profile=None):
+    script_path = repo_root / "scripts" / "push_databricks_workspace.py"
+    cmd = [sys.executable, str(script_path), "--workspace-dir", workspace_dir]
+    if profile:
+        cmd.extend(["--profile", profile])
+    run(cmd)
+
+def run_databricks_imports(repo_root, target_path, profile=None):
+    if profile:
+        login_databricks_profile(repo_root / "terraform" / "08_databricks", profile)
+    import_databricks_dbc(repo_root, target_path, profile=profile)
+
 if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser(description="Deploy Terraform stacks for the Spotify data platform.")
@@ -533,13 +609,23 @@ if __name__ == "__main__":
             help="Deploy only the Databricks access connector stack",
         )
         group.add_argument(
-            "--databricks-uc-only",
+            "--uc-only",
             action="store_true",
             help="Deploy only the Databricks Unity Catalog stack",
+        )
+        group.add_argument(
+            "--db-import-only",
+            action="store_true",
+            help="Import the Databricks DBC file only",
         )
         parser.add_argument("--sql-init", action="store_true", help="Run the SQL init script after SQL deploy")
         parser.add_argument("--skip-sql-init", action="store_true", help="Skip SQL init on full deploy")
         parser.add_argument("--skip-adf-git-check", action="store_true", help="Skip manual ADF Git prompt")
+        parser.add_argument("--skip-dbc-import", action="store_true", help="Skip Databricks DBC import")
+        parser.add_argument(
+            "--databricks-profile",
+            help="Databricks CLI profile for workspace imports (DBC).",
+        )
         args = parser.parse_args()
 
         repo_root = Path(__file__).resolve().parent.parent
@@ -564,9 +650,12 @@ if __name__ == "__main__":
             or args.monitoring_only
             or args.databricks_only
             or args.databricks_access_connector_only
-            or args.databricks_uc_only
+            or args.uc_only
+            or args.db_import_only
         )
         run_sql_init = args.sql_init or (full_deploy and not args.skip_sql_init)
+        run_dbc_import = not args.skip_dbc_import
+        databricks_profile = args.databricks_profile
 
         if args.rg_only:
             write_rg_tfvars(rg_dir)
@@ -666,7 +755,7 @@ if __name__ == "__main__":
             run(["terraform", f"-chdir={access_connector_dir}", "apply", "-auto-approve"])
             sys.exit(0)
 
-        if args.databricks_uc_only:
+        if args.uc_only:
             databricks_host = get_output(databricks_dir, "databricks_workspace_url")
             databricks_workspace_resource_id = get_output(databricks_dir, "databricks_workspace_id")
             access_connector_id = get_output(access_connector_dir, "access_connector_id")
@@ -680,6 +769,15 @@ if __name__ == "__main__":
             )
             run(["terraform", f"-chdir={uc_dir}", "init"])
             run(["terraform", f"-chdir={uc_dir}", "apply", "-auto-approve"])
+            sys.exit(0)
+
+        if args.db_import_only:
+            dbc_target_path = get_databricks_dbc_target_path()
+            run_databricks_imports(
+                repo_root,
+                dbc_target_path,
+                profile=databricks_profile,
+            )
             sys.exit(0)
 
         write_rg_tfvars(rg_dir)
@@ -760,6 +858,15 @@ if __name__ == "__main__":
         )
         run(["terraform", f"-chdir={uc_dir}", "init"])
         run(["terraform", f"-chdir={uc_dir}", "apply", "-auto-approve"])
+        if run_dbc_import:
+            if databricks_profile:
+                login_databricks_profile(databricks_dir, databricks_profile)
+            dbc_target_path = get_databricks_dbc_target_path()
+            import_databricks_dbc(
+                repo_root,
+                dbc_target_path,
+                profile=databricks_profile,
+            )
     except subprocess.CalledProcessError as exc:
         print(f"Command failed: {exc}")
         sys.exit(exc.returncode)

@@ -32,7 +32,7 @@ locals {
   loop_input_path = fileexists("${path.module}/../../data_scripts/loop_input.json") ? "${path.module}/../../data_scripts/loop_input.json" : "${path.module}/../../data_scripts/loop_input.txt"
   loop_input = jsondecode(file(local.loop_input_path))
   cdc_folders = toset([for entry in local.loop_input : "${entry.table}_cdc"])
-  extra_seed_folders = toset(["FactStream"])
+  extra_seed_folders = toset([])
   seed_folders = setunion(local.cdc_folders, local.extra_seed_folders)
   cdc_seed_files = {
     for folder in local.seed_folders :
@@ -42,6 +42,11 @@ locals {
     for folder in local.seed_folders :
     "${folder}/empty.json" => "${path.module}/../../data_scripts/empty.json"
   }
+  dimuser_dirs = toset([
+    "DimUser",
+    "DimUser/data",
+    "DimUser/checkpoint",
+  ])
 }
 
 resource "azurerm_storage_account" "main" {
@@ -81,5 +86,13 @@ resource "azurerm_storage_blob" "cdc_empty" {
   type                   = "Block"
   source                 = each.value
   content_type           = "application/json"
+}
+
+resource "azurerm_storage_data_lake_gen2_path" "silver_dimuser_dirs" {
+  for_each           = local.dimuser_dirs
+  path               = each.key
+  filesystem_name    = azurerm_storage_container.medallion["silver"].name
+  storage_account_id = azurerm_storage_account.main.id
+  resource           = "directory"
 }
 

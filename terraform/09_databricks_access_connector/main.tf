@@ -48,3 +48,9 @@ resource "azurerm_role_assignment" "storage_blob_contributor" {
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_databricks_access_connector.main.identity[0].principal_id
 }
+
+resource "azurerm_role_assignment" "storage_blob_delegator" {
+  scope                = var.storage_account_id
+  role_definition_name = "Storage Blob Delegator"
+  principal_id         = azurerm_databricks_access_connector.main.identity[0].principal_id
+}
