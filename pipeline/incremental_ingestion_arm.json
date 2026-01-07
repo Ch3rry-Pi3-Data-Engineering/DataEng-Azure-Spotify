@@ -157,14 +157,7 @@
 													"folder": "@item().table"
 												}
 											},
-											"logStorageSettings": {
-												"linkedServiceName": {
-													"referenceName": "lsadls-spotify",
-													"type": "LinkedServiceReference"
-												},
-												"path": ""
-											},
-											"enableLogging": true
+											"enableLogging": false
 										}
 									}
 								],
@@ -305,7 +298,7 @@
 			}
 		},
 		"annotations": [],
-		"lastPublishTime": "2026-01-05T16:19:24Z"
+		"lastPublishTime": "2026-01-06T11:56:07Z"
 	},
 	"type": "Microsoft.DataFactory/factories/pipelines"
 }
