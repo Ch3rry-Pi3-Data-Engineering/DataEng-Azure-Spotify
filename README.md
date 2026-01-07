@@ -36,7 +36,7 @@ DATABRICKS_WORKSPACE_USER=you@domain.com
 
 If you run Terraform manually instead of the script, set `TF_VAR_databricks_account_id`, `TF_VAR_databricks_client_id`, and `TF_VAR_databricks_client_secret` or keep `terraform/10_databricks_uc/terraform.tfvars` around.
 
-To import the DBC with `scripts/import_databricks_dbc.py`, install the Databricks CLI. The script loads `.env`, detects the workspace host, and uses OAuth M2M when the Databricks client ID/secret are set, so you do not need an interactive login.
+To push workspace content with `scripts/push_databricks_workspace.py`, install the Databricks CLI. The script loads `.env`, detects the workspace host, and uses OAuth M2M when the Databricks client ID/secret are set, so you do not need an interactive login.
 
 ## Project Structure
 - terraform/01_resource_group: Azure resource group
@@ -180,9 +180,9 @@ This pipeline is created manually and included in the `spotify_dab.dbc` bundle; 
 
 ```mermaid
 graph LR
-    B[Bronze Parquet (ADLS)] --> S[Silver tables (spotify.silver)]
+    B["Bronze Parquet (ADLS)"] --> S["Silver tables (spotify.silver)"]
     S --> P[DLT gold_pipeline]
-    P --> G[Gold SCD tables (spotify.gold)]
+    P --> G["Gold SCD tables (spotify.gold)"]
 ```
 
 ## Databricks Unity Catalog (Automation)

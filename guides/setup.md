@@ -217,9 +217,9 @@ This pipeline is created manually and included in the `spotify_dab.dbc` bundle; 
 
 ```mermaid
 graph LR
-    B[Bronze Parquet (ADLS)] --> S[Silver tables (spotify.silver)]
+    B["Bronze Parquet (ADLS)"] --> S["Silver tables (spotify.silver)"]
     S --> P[DLT gold_pipeline]
-    P --> G[Gold SCD tables (spotify.gold)]
+    P --> G["Gold SCD tables (spotify.gold)"]
 ```
 
 ## Azure Data Factory Linked Services (Terraform)
